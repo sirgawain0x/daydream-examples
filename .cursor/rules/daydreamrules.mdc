@@ -1,0 +1,242 @@
+---
+alwaysApply: true
+---
+Using the API instructions below and the API key "REPLACE WITH YOUR API KEY", built a single webpage that creates a stream via the API, lets me stream in video from my webcam over webrtc and displays the output video.
+
+Do not allow HLS output, only WebRTC.
+
+Use the 'iframe' method of embedding the Livepeer player for the output, e.g lvpr.tv/?v={playbackid}&lowLatency=force. Make sure to host the page locally with e.g python3 -m http.server so that they don't get CORS errors with the player.
+
+Provide some controls to edit the parameters, but keep the UI fun and user-friendly.
+
+API instructions follow:
+
+# Table of contents
+
+# Overview
+
+This guide will walk you through **sending in video** to our StreamDiffusion pipeline,  **adjusting the parameters** to create different visual effects and **viewing the output video**.
+
+# API Auth
+
+API keys can be created via the [Key Generator Tool](https://app.daydream.live/beta/api-key) using the passcode provided in Discord. You can create as many as you like.
+
+The API uses `Bearer` auth and so all requests need to include an `Authorization` header with a `Bearer` prefix, i.e:
+
+```jsx
+Authorization: Bearer <Your API key here>
+```
+
+It’s important to note that your API keys come with significant privileges, so
+it’s essential to keep them safe and secure! Refrain from sharing your secret
+API keys in GitHub or other publicly accessible places.
+
+# API Documentation
+
+The full (raw) API reference can be found on the [Livepeer AI Docs Site](https://docs.daydream.live/api-reference/reference). This is still a work-in-progress and currently isn’t user-friendly enough to be used standalone.
+
+# Creating Your First App
+
+Creating an app on top of our StreamDiffusion pipeline consists of 3 main parts:
+
+1. Creating a `Stream` object
+2. Sending in video and playing the output
+3. Setting StreamDiffusion parameters
+
+🏗️ Let’s start building!
+
+## 1. Creating a Stream object
+
+<aside>
+🧑‍💻
+
+All of the code in this doc is in Bash scripting format, to make it simple to try out
+
+</aside>
+
+First, create a new **Stream**. This is the core conceptual building block we’ll be dealing with and represents a `video → StreamDiffusion → video` pipeline.
+
+### Create Stream Request
+
+```bash
+# This can currently be hardcoded, but in the future will let you switch
+# between different types of AI video manipulation
+PIPELINE_ID="pip_qpUgXycjWF6YMeSL"
+
+# Change this to be the API key you generated
+DAYDREAM_API_KEY="Your API key goes here!"
+
+curl -X POST \
+  "https://api.daydream.live/v1/streams" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${DAYDREAM_API_KEY}" \
+  -d "{\"pipeline_id\":\"${PIPELINE_ID}\"}"
+```
+
+You should then get a response that looks something like the following. We’ve omitted fields other than the ones you’ll need in future steps.
+
+### Create Stream Response
+
+```json
+{
+  "id": "str_gERGnGZE4331XBxW",
+  "output_playback_id": "0d1crgzijlcsxpw4",
+  "whip_url": "https://ai.livepeer.com/live/video-to-video/stk_abc123/whip"
+}
+
+```
+
+## 2. Sending in video and playing the output
+
+📽️ Now we need to start sending in some video!
+
+1. Download [OBS](https://obsproject.com/)
+2. Take the `whip_url` from the `Create Stream Response` (above)
+3. In your **OBS** settings, choose `WHIP` as the **Service** and use the `whip_url` as the **Server**. You can leave **Bearer Token** blank.
+    
+    ![image.png](attachment:68729261-3395-4953-85d6-f20023a8a149:image.png)
+    
+4. Take the `output_playback_id` from the `Create Stream Response` (above) and go to `https://lvpr.tv/?v=<your output_playback_id>` 
+5. **📺 If everything has gone well, you should now see your video!**
+
+▶️ If you’d prefer to use your own video player then you can:
+
+1. Fetch the playback URLs from Livepeer Studio’s Playback endpoint
+    1. `curl "https://livepeer.studio/api/playback/<your playback id>"` 
+2. Choose either the HLS or WebRTC endpoint, depending on your preference
+3. Put the URL into your chosen player
+
+## 3. Setting StreamDiffusion parameters
+
+To set parameters and adjust what’s happening to your stream you need to do a `POST` request to the `https://api.daydream.live/beta/streams/<YOUR STREAM ID>/prompts` endpoint with the following JSON body.
+
+<aside>
+ℹ️
+
+It’s currently required to send the full body on every update, but this will soon be replaced with a **PATCH** call that only contains the elements which are changing
+
+</aside>
+
+```json
+{
+  "model_id": "streamdiffusion",
+  "pipeline": "live-video-to-video",
+  "params": {
+    "model_id": "stabilityai/sd-turbo",
+    "prompt": "green slimey monster",
+    "prompt_interpolation_method": "slerp",
+    "normalize_prompt_weights": true,
+    "normalize_seed_weights": true,
+    "negative_prompt": "blurry, low quality, flat, 2d",
+    "num_inference_steps": 50,
+    "seed": 42,
+    "t_index_list": [
+      0,
+      8,
+      17
+    ],
+    "controlnets": [
+      {
+        "conditioning_scale": 0,
+        "control_guidance_end": 1,
+        "control_guidance_start": 0,
+        "enabled": true,
+        "model_id": "thibaud/controlnet-sd21-openpose-diffusers",
+        "preprocessor": "pose_tensorrt",
+        "preprocessor_params": {}
+      },
+      {
+        "conditioning_scale": 0,
+        "control_guidance_end": 1,
+        "control_guidance_start": 0,
+        "enabled": true,
+        "model_id": "thibaud/controlnet-sd21-hed-diffusers",
+        "preprocessor": "soft_edge",
+        "preprocessor_params": {}
+      },
+      {
+        "conditioning_scale": 0,
+        "control_guidance_end": 1,
+        "control_guidance_start": 0,
+        "enabled": true,
+        "model_id": "thibaud/controlnet-sd21-canny-diffusers",
+        "preprocessor": "canny",
+        "preprocessor_params": {
+          "high_threshold": 200,
+          "low_threshold": 100
+        }
+      },
+      {
+        "conditioning_scale": 0,
+        "control_guidance_end": 1,
+        "control_guidance_start": 0,
+        "enabled": true,
+        "model_id": "thibaud/controlnet-sd21-depth-diffusers",
+        "preprocessor": "depth_tensorrt",
+        "preprocessor_params": {}
+      },
+      {
+        "conditioning_scale": 0,
+        "control_guidance_end": 1,
+        "control_guidance_start": 0,
+        "enabled": true,
+        "model_id": "thibaud/controlnet-sd21-color-diffusers",
+        "preprocessor": "passthrough",
+        "preprocessor_params": {}
+      }
+    ]
+  }
+}
+
+```
+
+### Parameter Change Examples
+
+Feel free to play around with any of the parameter values. Some interesting ones are:
+
+| Parameter | Description |
+| --- | --- |
+| prompt | Guides the model in terms of what kind of output image to create |
+| negative_prompt | Tells the model what *not* to produce. In this case it discourages low quality, 2D, flat, or blurry results. |
+| num_inference_steps | High values will give a better quality output at the expense of speed / FPS |
+| seed | Ensures reproducibility of results across runs. Vary this to randomise the output slightly. |
+
+**Control Nets**
+
+These are a way to guide or control image generation in StableDiffusion by providing *extra structural input,* such as poses, edges, depth maps etc. to help the model determine how to understand the input video.
+
+These will have varying impacts on framerate, so it’s worth experimenting on which are worth enabling for your use case.
+
+<aside>
+⚠️
+
+Don’t use the **enabled** field to enable or disable the ControlNets as this currently incurs a pipeline reload. Setting **conditioning_scale** to zero instead will have the same effect as disabling a pipeline.
+
+</aside>
+
+To enable a control net, adjust the `conditioning_scale` parameter:
+
+```json
+{
+        **"conditioning_scale": 0.22,**
+        "control_guidance_end": 1,
+        "control_guidance_start": 0,
+        "enabled": true,
+        "model_id": "thibaud/controlnet-sd21-openpose-diffusers",
+        "preprocessor": "pose_tensorrt",
+        "preprocessor_params": {}
+      },
+```
+
+The ones we’ve provided are:
+
+- **Pose Estimation**
+    - Body and hand pose tracking - detects human poses and maintains them in the generated image
+- **Edge Detection (HED)**
+    - Soft edge detection - preserves smooth edges and contours from the input image
+- **Canny Edge Detection**
+    - Sharp edge preservation - maintains crisp edges and detailed outlines
+- **Depth Estimation**
+    - Object and face structure - preserves spatial depth and 3D structure
+- **Color Preservation**
+    - Color composition passthrough - maintains the color palette and composition

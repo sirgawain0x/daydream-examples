@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daydream Stream Render</title>
+    <style>
+      :root {
+        --bg: #0b0b11;
+        --panel: #141423;
+        --panel-2: #191933;
+        --text: #e6e6f0;
+        --muted: #9aa0b4;
+        --accent-1: #6ea8ff;
+        --accent-2: #b073ff;
+        --danger: #ff6b6b;
+        --success: #22c55e;
+        --warning: #f59e0b;
+        --border: #242445;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: radial-gradient(1200px 800px at 10% -10%, rgba(110,168,255,0.15), transparent),
+                    radial-gradient(1000px 700px at 110% 10%, rgba(176,115,255,0.17), transparent),
+                    var(--bg);
+        color: var(--text);
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      header {
+        text-align: center;
+        margin-bottom: 18px;
+      }
+      .title {
+        font-size: 32px;
+        font-weight: 800;
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        margin: 0 0 6px 0;
+      }
+      .subtitle { color: var(--muted); margin: 0; }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 16px;
+      }
+      @media (min-width: 1024px) {
+        .grid { grid-template-columns: 1.5fr 1fr; }
+      }
+
+      .panel {
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.03);
+      }
+      .panel h3 { margin: 0 0 8px 0; font-size: 14px; color: var(--muted); font-weight: 600; }
+
+      .feeds {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      @media (min-width: 640px) {
+        .feeds { grid-template-columns: 1fr 1fr; }
+      }
+      .feed {
+        background: #0f0f1a;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .feed-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: var(--muted);
+        border-bottom: 1px solid var(--border);
+        background: rgba(255,255,255,0.02);
+      }
+      .feed-body { position: relative; }
+      video, iframe { width: 100%; height: 320px; display: block; background: #000; }
+      .placeholder { height: 320px; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+      .field { display: flex; flex-direction: column; gap: 6px; }
+      label { font-size: 12px; color: var(--muted); }
+      input[type="text"], input[type="password"], input[type="number"], select, textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0e0e1a;
+        color: var(--text);
+        outline: none;
+      }
+      textarea { min-height: 64px; resize: vertical; }
+      input[type="range"] { width: 100%; }
+      .slider-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+      .muted { color: var(--muted); font-size: 12px; }
+
+      .btn {
+        appearance: none;
+        border: none;
+        padding: 10px 14px;
+        border-radius: 12px;
+        font-weight: 700;
+        color: #0b0b11;
+        background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+        cursor: pointer;
+        transition: transform 0.06s ease, box-shadow 0.2s ease;
+        box-shadow: 0 8px 20px rgba(110,168,255,0.25), 0 10px 24px rgba(176,115,255,0.2);
+      }
+      .btn:active { transform: translateY(1px); }
+      .btn.secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        box-shadow: none;
+      }
+      .status { font-size: 12px; color: var(--muted); }
+      .status.ok { color: var(--success); }
+      .status.err { color: var(--danger); }
+      .error-box { background: rgba(255,107,107,0.1); border: 1px solid rgba(255,107,107,0.3); color: #ffd1d1; padding: 10px; border-radius: 10px; }
+      .pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: #0f0f1a; border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1 class="title">StreamDiffusion Playground</h1>
+        <p class="subtitle">Webcam in → AI magic → WebRTC out. Zero HLS, maximum vibes.</p>
+      </header>
+
+      <div class="grid">
+        <section class="panel">
+          <h3>Streams</h3>
+          <div class="feeds">
+            <div class="feed">
+              <div class="feed-header"><span>Webcam</span><span class="pill" id="inputRes">—</span></div>
+              <div class="feed-body">
+                <video id="localVideo" playsinline autoplay muted></video>
+              </div>
+            </div>
+            <div class="feed">
+              <div class="feed-header"><span>AI Output</span><span class="pill" id="playbackPill">No playback</span></div>
+              <div class="feed-body" id="outputContainer">
+                <div id="outputPlaceholder" class="placeholder">Start the stream to see output</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Controls</h3>
+          <div class="controls">
+            <div class="row">
+              <div class="field">
+                <label>API Key</label>
+                <input id="apiKey" type="password" placeholder="REPLACE WITH YOUR API KEY" />
+              </div>
+              <div class="field">
+                <label>Pipeline ID</label>
+                <input id="pipelineId" type="text" value="pip_qpUgXycjWF6YMeSL" />
+              </div>
+            </div>
+
+            <div class="row">
+              <button id="startStop" class="btn">Start</button>
+              <div class="field">
+                <label>Status</label>
+                <div id="status" class="status">Idle</div>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Prompt</label>
+              <input id="prompt" type="text" value="green slimy monster" />
+            </div>
+            <div class="field">
+              <label>Negative Prompt</label>
+              <input id="negativePrompt" type="text" value="blurry, low quality, flat, 2d" />
+            </div>
+
+            <div class="row-3">
+              <div class="field">
+                <label>Inference Steps</label>
+                <div class="slider-row">
+                  <input id="steps" type="range" min="1" max="100" step="1" value="50" />
+                  <span class="muted" id="stepsVal">50</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>Seed</label>
+                <input id="seed" type="number" value="42" />
+              </div>
+              <div class="field">
+                <label>t_index_list</label>
+                <input id="tIndexList" type="text" value="0,8,17" />
+              </div>
+            </div>
+
+            <div class="panel" style="padding: 10px;">
+              <h3 style="margin-bottom: 6px;">ControlNets</h3>
+              <div class="field">
+                <label>Pose Estimation</label>
+                <div class="slider-row">
+                  <input id="cnPose" type="range" min="0" max="1" step="0.01" value="0" />
+                  <span class="muted" id="cnPoseVal">0.00</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>Soft Edges (HED)</label>
+                <div class="slider-row">
+                  <input id="cnHed" type="range" min="0" max="1" step="0.01" value="0" />
+                  <span class="muted" id="cnHedVal">0.00</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>Sharp Edges (Canny)</label>
+                <div class="slider-row">
+                  <input id="cnCanny" type="range" min="0" max="1" step="0.01" value="0" />
+                  <span class="muted" id="cnCannyVal">0.00</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>Depth Estimation</label>
+                <div class="slider-row">
+                  <input id="cnDepth" type="range" min="0" max="1" step="0.01" value="0" />
+                  <span class="muted" id="cnDepthVal">0.00</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>Color Preservation</label>
+                <div class="slider-row">
+                  <input id="cnColor" type="range" min="0" max="1" step="0.01" value="0" />
+                  <span class="muted" id="cnColorVal">0.00</span>
+                </div>
+              </div>
+            </div>
+
+            <div id="errorBox" class="error-box" style="display:none;"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        const API_BASE = 'https://api.daydream.live';
+        const PROMPTS_PATH = '/beta/streams';
+
+        let isStreaming = false;
+        let streamId = null;
+        let whipUrl = null;
+        let playbackId = null;
+        let localStream = null;
+        let pc = null;
+        let debounceTimer = null;
+
+        const els = {
+          apiKey: document.getElementById('apiKey'),
+          pipelineId: document.getElementById('pipelineId'),
+          startStop: document.getElementById('startStop'),
+          status: document.getElementById('status'),
+          err: document.getElementById('errorBox'),
+          localVideo: document.getElementById('localVideo'),
+          outputContainer: document.getElementById('outputContainer'),
+          outputPlaceholder: document.getElementById('outputPlaceholder'),
+          playbackPill: document.getElementById('playbackPill'),
+          inputRes: document.getElementById('inputRes'),
+          prompt: document.getElementById('prompt'),
+          negativePrompt: document.getElementById('negativePrompt'),
+          steps: document.getElementById('steps'),
+          stepsVal: document.getElementById('stepsVal'),
+          seed: document.getElementById('seed'),
+          tIndexList: document.getElementById('tIndexList'),
+          cnPose: document.getElementById('cnPose'),
+          cnPoseVal: document.getElementById('cnPoseVal'),
+          cnHed: document.getElementById('cnHed'),
+          cnHedVal: document.getElementById('cnHedVal'),
+          cnCanny: document.getElementById('cnCanny'),
+          cnCannyVal: document.getElementById('cnCannyVal'),
+          cnDepth: document.getElementById('cnDepth'),
+          cnDepthVal: document.getElementById('cnDepthVal'),
+          cnColor: document.getElementById('cnColor'),
+          cnColorVal: document.getElementById('cnColorVal'),
+        };
+
+        const defaultParams = {
+          model_id: 'streamdiffusion',
+          pipeline: 'live-video-to-video',
+          params: {
+            model_id: 'stabilityai/sd-turbo',
+            prompt: els.prompt.value,
+            prompt_interpolation_method: 'slerp',
+            normalize_prompt_weights: true,
+            normalize_seed_weights: true,
+            negative_prompt: els.negativePrompt.value,
+            num_inference_steps: Number(els.steps.value),
+            seed: Number(els.seed.value),
+            t_index_list: parseTIndex(els.tIndexList.value),
+            controlnets: [
+              { name: 'Pose Estimation', preprocessor: 'pose_tensorrt', conditioning_scale: Number(els.cnPose.value), model_id: 'thibaud/controlnet-sd21-openpose-diffusers' },
+              { name: 'Soft Edges (HED)', preprocessor: 'soft_edge', conditioning_scale: Number(els.cnHed.value), model_id: 'thibaud/controlnet-sd21-hed-diffusers' },
+              { name: 'Sharp Edges (Canny)', preprocessor: 'canny', conditioning_scale: Number(els.cnCanny.value), model_id: 'thibaud/controlnet-sd21-canny-diffusers' },
+              { name: 'Depth Estimation', preprocessor: 'depth_tensorrt', conditioning_scale: Number(els.cnDepth.value), model_id: 'thibaud/controlnet-sd21-depth-diffusers' },
+              { name: 'Color Preservation', preprocessor: 'passthrough', conditioning_scale: Number(els.cnColor.value), model_id: 'thibaud/controlnet-sd21-color-diffusers' },
+            ].map(cn => ({ ...cn, control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: {} })),
+          }
+        };
+        let params = JSON.parse(JSON.stringify(defaultParams));
+
+        function setStatus(text, kind = 'info') {
+          els.status.textContent = text;
+          els.status.className = 'status' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
+        }
+        function setError(msg) {
+          if (!msg) { els.err.style.display = 'none'; els.err.textContent = ''; return; }
+          els.err.style.display = 'block';
+          els.err.textContent = msg;
+        }
+        function parseTIndex(s) {
+          return s.split(',').map(v => v.trim()).filter(Boolean).map(v => Number(v)).filter(v => Number.isFinite(v));
+        }
+        function debounce(fn, ms = 350) {
+          return function() {
+            const ctx = this; const args = arguments;
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => fn.apply(ctx, args), ms);
+          };
+        }
+
+        async function startStream() {
+          const API_KEY = els.apiKey.value.trim();
+          const pipelineId = els.pipelineId.value.trim();
+          if (!API_KEY) { setError('Enter your API key.'); return; }
+          if (!pipelineId) { setError('Enter a pipeline id.'); return; }
+          setError('');
+          setStatus('Creating stream...');
+          els.startStop.disabled = true;
+          try {
+            // 1) Create stream
+            const res = await fetch(`${API_BASE}/v1/streams`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+              body: JSON.stringify({ pipeline_id: pipelineId })
+            });
+            if (!res.ok) {
+              const err = await safeJson(res);
+              throw new Error(`Create stream failed: ${err.message || res.statusText}`);
+            }
+            const data = await res.json();
+            streamId = data.id; whipUrl = data.whip_url; playbackId = data.output_playback_id;
+            els.playbackPill.textContent = playbackId ? `Playback: ${playbackId}` : 'No playback';
+
+            // 2) Webcam
+            setStatus('Requesting webcam...');
+            localStream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+            els.localVideo.srcObject = localStream;
+            const vtrack = localStream.getVideoTracks()[0];
+            if (vtrack) {
+              const s = vtrack.getSettings();
+              els.inputRes.textContent = `${s.width || ''}x${s.height || ''} @ ${s.frameRate || ''}fps`;
+            }
+
+            // 3) WHIP publish
+            setStatus('Connecting WHIP...');
+            await startWhip(API_KEY);
+
+            // 4) Show player
+            mountPlayerIframe(playbackId);
+
+            // 5) Send initial params
+            setStatus('Sending params...');
+            await updateParams(API_KEY);
+
+            isStreaming = true;
+            els.startStop.textContent = 'Stop';
+            setStatus('Streaming live!', 'ok');
+          } catch (e) {
+            console.error(e);
+            setError(e.message || 'Unknown error');
+            setStatus('Error', 'err');
+            await stopStream();
+          } finally {
+            els.startStop.disabled = false;
+          }
+        }
+
+        async function stopStream() {
+          setStatus('Stopping...');
+          try {
+            if (pc) {
+              try { pc.close(); } catch {}
+              pc = null;
+            }
+            if (localStream) {
+              for (const t of localStream.getTracks()) try { t.stop(); } catch {}
+              localStream = null;
+            }
+          } finally {
+            isStreaming = false; streamId = null; whipUrl = null; playbackId = null;
+            els.startStop.textContent = 'Start';
+            els.playbackPill.textContent = 'No playback';
+            unmountPlayerIframe();
+            setStatus('Idle');
+          }
+        }
+
+        async function startWhip(API_KEY) {
+          if (!whipUrl || !localStream) throw new Error('Missing WHIP URL or local stream');
+          pc = new RTCPeerConnection();
+          for (const track of localStream.getVideoTracks()) pc.addTrack(track, localStream);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          const res = await fetch(whipUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/sdp', 'Authorization': `Bearer ${API_KEY}` },
+            body: pc.localDescription && pc.localDescription.sdp ? pc.localDescription.sdp : ''
+          });
+          if (res.status !== 201) throw new Error(`WHIP failed: ${res.status}`);
+          const answerSdp = await res.text();
+          await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+        }
+
+        function mountPlayerIframe(id) {
+          if (!id) return;
+          const src = `https://lvpr.tv/?v=${encodeURIComponent(id)}&lowLatency=force`;
+          const iframe = document.createElement('iframe');
+          iframe.allow = 'autoplay; fullscreen; picture-in-picture; clipboard-write';
+          iframe.referrerPolicy = 'origin';
+          iframe.src = src;
+          iframe.style.height = '320px';
+          iframe.style.width = '100%';
+          els.outputContainer.innerHTML = '';
+          els.outputContainer.appendChild(iframe);
+        }
+        function unmountPlayerIframe() {
+          els.outputContainer.innerHTML = '';
+          els.outputContainer.appendChild(els.outputPlaceholder);
+        }
+
+        async function updateParams(API_KEY) {
+          if (!streamId) return;
+          const payload = JSON.parse(JSON.stringify(params));
+          if (payload && payload.params && Array.isArray(payload.params.controlnets)) {
+            for (const cn of payload.params.controlnets) delete cn.name;
+          }
+          const res = await fetch(`${API_BASE}${PROMPTS_PATH}/${encodeURIComponent(streamId)}/prompts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) {
+            let msg = 'Failed to update params';
+            try { const j = await res.json(); if (j && j.message) msg = j.message; } catch {}
+            throw new Error(msg);
+          }
+        }
+
+        const debouncedUpdate = debounce(async function() {
+          if (!isStreaming) return;
+          try { await updateParams(els.apiKey.value.trim()); setStatus('Streaming live!', 'ok'); setError(''); } 
+          catch (e) { setError(e.message || 'Update error'); setStatus('Update failed', 'err'); }
+        }, 400);
+
+        // Wire controls
+        els.startStop.addEventListener('click', () => isStreaming ? stopStream() : startStream());
+        els.steps.addEventListener('input', () => { els.stepsVal.textContent = String(els.steps.value); params.params.num_inference_steps = Number(els.steps.value); debouncedUpdate(); });
+        els.seed.addEventListener('change', () => { params.params.seed = Number(els.seed.value); debouncedUpdate(); });
+        els.prompt.addEventListener('change', () => { params.params.prompt = els.prompt.value; debouncedUpdate(); });
+        els.negativePrompt.addEventListener('change', () => { params.params.negative_prompt = els.negativePrompt.value; debouncedUpdate(); });
+        els.tIndexList.addEventListener('change', () => { params.params.t_index_list = parseTIndex(els.tIndexList.value); debouncedUpdate(); });
+
+        function wireCn(el, valEl, idx) {
+          el.addEventListener('input', () => {
+            const v = Number(el.value);
+            valEl.textContent = v.toFixed(2);
+            params.params.controlnets[idx].conditioning_scale = v;
+            debouncedUpdate();
+          });
+        }
+        wireCn(els.cnPose, els.cnPoseVal, 0);
+        wireCn(els.cnHed, els.cnHedVal, 1);
+        wireCn(els.cnCanny, els.cnCannyVal, 2);
+        wireCn(els.cnDepth, els.cnDepthVal, 3);
+        wireCn(els.cnColor, els.cnColorVal, 4);
+
+        // Initialize displayed values
+        els.stepsVal.textContent = String(els.steps.value);
+        els.cnPoseVal.textContent = Number(els.cnPose.value).toFixed(2);
+        els.cnHedVal.textContent = Number(els.cnHed.value).toFixed(2);
+        els.cnCannyVal.textContent = Number(els.cnCanny.value).toFixed(2);
+        els.cnDepthVal.textContent = Number(els.cnDepth.value).toFixed(2);
+        els.cnColorVal.textContent = Number(els.cnColor.value).toFixed(2);
+
+        // Reset on unload
+        window.addEventListener('beforeunload', () => { if (isStreaming) stopStream(); });
+      })();
+    </script>
+  </body>
+</html>
+
+
