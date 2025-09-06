@@ -64,6 +64,11 @@ export interface FluidCanvasProps {
    * CSS styles for the canvas element
    */
   style?: React.CSSProperties;
+
+  /**
+   * When > 0, emits random splats at this interval (ms)
+   */
+  randomSplatsIntervalMs?: number;
 }
 
 export interface FluidConfig {

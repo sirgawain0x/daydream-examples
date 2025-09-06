@@ -66,6 +66,7 @@ export const FluidCanvas = ({
   enableBackgroundStreaming = true,
   className = "",
   style = {},
+  randomSplatsIntervalMs = 0,
 }: FluidCanvasProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationIdRef = useRef<number | null>(null);
@@ -621,6 +622,21 @@ export const FluidCanvas = ({
         densityDissipation || Math.max(0.1, 2.5 - glow);
     }
   }, [splatForce, curl, velocityDissipation, densityDissipation, glow]);
+
+  useEffect(() => {
+    if (!randomSplatsIntervalMs || randomSplatsIntervalMs <= 0) return;
+
+    const intervalId = window.setInterval(() => {
+      // Ensure WebGL is ready
+      if (!glRef.current) return;
+      // Emit a single small random splat regularly
+      multipleSplats(1, refs, width, height);
+    }, randomSplatsIntervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [randomSplatsIntervalMs, width, height]);
 
   return (
     <canvas
