@@ -1,6 +1,6 @@
 interface StreamValidationOptions {
   minStableFrames?: number;
-  timeoutMs?: number;
+  _timeoutMs?: number;
   validateAudio?: boolean;
 }
 
@@ -29,7 +29,7 @@ class StreamStabilizer {
   ): Promise<StreamStabilizationResult> {
     const {
       minStableFrames = 5,
-      timeoutMs = 3000,
+      // _timeoutMs = 3000,
       validateAudio = true,
     } = options;
 

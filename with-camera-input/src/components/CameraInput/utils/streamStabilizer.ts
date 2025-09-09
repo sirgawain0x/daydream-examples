@@ -185,7 +185,7 @@ class StreamStabilizer {
   }
 
   cancelAllValidations(): void {
-    for (const [streamId, controller] of this.pendingValidations) {
+    for (const [, controller] of this.pendingValidations) {
       controller.abort();
     }
     this.pendingValidations.clear();

@@ -194,7 +194,7 @@ export function useRecordingManager({ playbackId, isStreaming, apiKey }: Recordi
     }
   }, [playbackId, isStreaming, apiKey, updateStatus]);
 
-  const monitorClipStatus = useCallback(async (assetId: string, apiKey: string) => {
+  const monitorClipStatus = useCallback(async (assetId: string, _apiKey: string) => {
     const maxAttempts = 30; // 5 minutes max
     let attempts = 0;
 

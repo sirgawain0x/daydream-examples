@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useRef } from "react";
 import { useScreenShare } from '../hooks/useScreenShare';
 import { useStreamManager } from '../hooks/useStreamManager';
 import type { ScreenShareConstraints, BackgroundOptions } from '../types';
@@ -27,7 +27,7 @@ export const ScreenShareInput: React.FC<ScreenShareInputProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   
-  const { registerSource, orchestratedStream } = useStreamManager({
+  const { registerSource } = useStreamManager({
     backgroundOptions,
     onStreamReady,
   });

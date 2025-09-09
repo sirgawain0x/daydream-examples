@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { useCamera } from "../hooks/useCamera";
 import { useScreenShare } from "../hooks/useScreenShare";
 import { useStreamManager } from "../hooks/useStreamManager";
@@ -49,7 +49,6 @@ export const CameraSwitcher: React.FC<CameraSwitcherProps> = ({
 
   const {
     registerSource,
-    orchestratedStream,
     setIsLoading: setSwitchingMode,
   } = useStreamManager({
     backgroundOptions,

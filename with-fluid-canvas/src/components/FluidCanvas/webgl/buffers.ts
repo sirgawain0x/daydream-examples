@@ -118,7 +118,7 @@ export function resizeDoubleFBO(
 
 export function resizeFBO(
   gl: any,
-  target: any,
+  _target: any,
   w: number,
   h: number,
   internalFormat: number,
