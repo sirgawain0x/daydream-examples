@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createSilentAudioTrack } from "../FluidCanvas/utils/audioTrack";
+import { FluidControls } from "../FluidControls";
 
 type ControlNet = {
   name?: string;
@@ -52,7 +53,19 @@ type StreamParams = {
 
 const API_BASE_URL = "https://api.daydream.live";
 
-export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: string | null) => void }) {
+export function StreamRender({ 
+  streamId: externalStreamId, 
+  apiKey: externalApiKey, 
+  onStreamIdChange,
+  prompt: externalPrompt,
+  onPromptChange
+}: { 
+  streamId?: string; 
+  apiKey?: string; 
+  onStreamIdChange?: (id: string | null) => void;
+  prompt?: string;
+  onPromptChange?: (prompt: string) => void;
+}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +116,11 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
   const [customTurnServer, setCustomTurnServer] = useState("turn:relay1.expressturn.com:3480");
   const [turnUsername, setTurnUsername] = useState("000000002072743325");
   const [turnPassword, setTurnPassword] = useState("vuyZ+Z6uqI0EKMSo0JBl6OTWduI=");
+
+  // Daydream prompt state
+  const [daydreamPrompt, setDaydreamPrompt] = useState("");
+  const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
+  const [promptStatus, setPromptStatus] = useState<string>("");
 
   const [params, setParams] = useState<StreamParams>({
     model_id: "streamdiffusion",
@@ -558,14 +576,15 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
   }, [customTurnServer, turnUsername, turnPassword, debugMode, setStatusWithLoading]);
 
   const checkStreamHealth = useCallback(async () => {
-    if (!streamId) return null;
+    const currentStreamId = externalStreamId || streamId;
+    if (!currentStreamId) return null;
     
     try {
-      const rawKey = apiKeyRef.current?.value || "";
+      const rawKey = externalApiKey || apiKeyRef.current?.value || "";
       const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
       
       // Use correct Daydream stream status endpoint
-      const response = await fetch(`https://api.daydream.live/v1/streams/${streamId}/status`, {
+      const response = await fetch(`https://api.daydream.live/v1/streams/${currentStreamId}/status`, {
         headers: { "Authorization": `Bearer ${apiKey}` }
       });
       
@@ -576,22 +595,23 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       } else {
         const errorText = await response.text().catch(() => "");
         console.warn("Stream status check failed:", response.status, errorText);
-        console.log("Checking stream status for ID:", streamId);
-        console.log("Full URL:", `https://api.daydream.live/v1/streams/${streamId}/status`);
+        console.log("Checking stream status for ID:", currentStreamId);
+        console.log("Full URL:", `https://api.daydream.live/v1/streams/${currentStreamId}/status`);
         return null;
       }
     } catch (e) {
       console.warn("Stream health check failed:", e);
       return null;
     }
-  }, [streamId]);
+  }, [externalStreamId, externalApiKey, streamId]);
 
   const updateApiParams = useCallback(async () => {
-    if (!streamId) return;
+    const currentStreamId = externalStreamId || streamId;
+    if (!currentStreamId) return;
     setStatusWithLoading("Updating AI parameters...");
     
     try {
-      const rawKey = apiKeyRef.current?.value || "";
+      const rawKey = externalApiKey || apiKeyRef.current?.value || "";
       const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
       
       // Check stream health first via Livepeer playback API
@@ -606,14 +626,14 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       payload.params.controlnets.forEach((cn) => delete cn.name);
       
       console.log("Sending parameters to AI pipeline:");
-      console.log("API Endpoint:", `${API_BASE_URL}/beta/streams/${streamId}/prompts`);
+      console.log("API Endpoint:", `${API_BASE_URL}/beta/streams/${currentStreamId}/prompts`);
       console.log("Payload structure:", JSON.stringify(payload, null, 2));
       console.log("Headers:", {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey.slice(0, 8)}...`
       });
       
-      const response = await fetch(`${API_BASE_URL}/beta/streams/${streamId}/prompts`, {
+      const response = await fetch(`${API_BASE_URL}/beta/streams/${currentStreamId}/prompts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -657,7 +677,7 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       setError(e?.message || "Unknown error");
       setStatusWithLoading(`Parameter update failed: ${e?.message || "Unknown error"}`);
     }
-  }, [params, setStatusWithLoading, streamId, checkStreamHealth, isStreaming]);
+  }, [params, setStatusWithLoading, externalStreamId, externalApiKey, streamId, checkStreamHealth, isStreaming]);
 
   const startStream = useCallback(async () => {
     const rawKey = apiKeyRef.current?.value || "";
@@ -677,7 +697,69 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       } catch {}
       // Create stream with correct API structure as per Daydream documentation
       const createStreamBody = {
-        pipeline_id: pipelineId
+        pipeline_id: pipelineId,
+        prompt: daydreamPrompt || params.params.prompt || "green slimey monster",
+        pipeline_params: {
+          model_id: "stabilityai/sd-turbo",
+          prompt: daydreamPrompt || params.params.prompt || "green slimey monster",
+          prompt_interpolation_method: "slerp",
+          normalize_prompt_weights: true,
+          normalize_seed_weights: true,
+          negative_prompt: "blurry, low quality, flat, 2d",
+          num_inference_steps: 50,
+          seed: 42,
+          t_index_list: [0, 8, 17],
+          controlnets: [
+            {
+              conditioning_scale: 0,
+              control_guidance_end: 1,
+              control_guidance_start: 0,
+              enabled: true,
+              model_id: "thibaud/controlnet-sd21-openpose-diffusers",
+              preprocessor: "pose_tensorrt",
+              preprocessor_params: {}
+            },
+            {
+              conditioning_scale: 0,
+              control_guidance_end: 1,
+              control_guidance_start: 0,
+              enabled: true,
+              model_id: "thibaud/controlnet-sd21-hed-diffusers",
+              preprocessor: "soft_edge",
+              preprocessor_params: {}
+            },
+            {
+              conditioning_scale: 0,
+              control_guidance_end: 1,
+              control_guidance_start: 0,
+              enabled: true,
+              model_id: "thibaud/controlnet-sd21-canny-diffusers",
+              preprocessor: "canny",
+              preprocessor_params: {
+                high_threshold: 200,
+                low_threshold: 100
+              }
+            },
+            {
+              conditioning_scale: 0,
+              control_guidance_end: 1,
+              control_guidance_start: 0,
+              enabled: true,
+              model_id: "thibaud/controlnet-sd21-depth-diffusers",
+              preprocessor: "depth_tensorrt",
+              preprocessor_params: {}
+            },
+            {
+              conditioning_scale: 0,
+              control_guidance_end: 1,
+              control_guidance_start: 0,
+              enabled: true,
+              model_id: "thibaud/controlnet-sd21-color-diffusers",
+              preprocessor: "passthrough",
+              preprocessor_params: {}
+            }
+          ]
+        }
       };
       
       console.log("Creating stream with params:", createStreamBody);
@@ -874,7 +956,8 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
     
     console.log("Starting stream health monitoring");
     healthMonitorRef.current = setInterval(async () => {
-      if (!streamId || !isStreaming) return;
+      const currentStreamId = externalStreamId || streamId;
+      if (!currentStreamId || !isStreaming) return;
       
       try {
         const streamStatus = await checkStreamHealth();
@@ -896,7 +979,7 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
         console.warn("Health monitoring check failed:", e);
       }
     }, 15000); // Check every 15 seconds
-  }, [streamId, isStreaming, checkStreamHealth, pipelineInitializing]);
+  }, [externalStreamId, streamId, isStreaming, checkStreamHealth, pipelineInitializing]);
 
   const stopHealthMonitoring = useCallback(() => {
     if (healthMonitorRef.current) {
@@ -975,10 +1058,12 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
   const handleParamChange = useCallback((key: keyof StreamParams["params"], value: any) => {
     setParams((prev) => ({ ...prev, params: { ...prev.params, [key]: value } }));
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    if (isStreaming) {
+    // Update parameters if we have a stream ID (either from external or local streaming)
+    const currentStreamId = externalStreamId || streamId;
+    if (currentStreamId) {
       debounceTimerRef.current = setTimeout(() => updateApiParams(), 350);
     }
-  }, [isStreaming, updateApiParams]);
+  }, [externalStreamId, streamId, updateApiParams]);
 
   const handleControlNetChange = useCallback((index: number, value: number) => {
     setParams((prev) => ({
@@ -989,10 +1074,12 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       },
     }));
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    if (isStreaming) {
+    // Update parameters if we have a stream ID (either from external or local streaming)
+    const currentStreamId = externalStreamId || streamId;
+    if (currentStreamId) {
       debounceTimerRef.current = setTimeout(() => updateApiParams(), 350);
     }
-  }, [isStreaming, updateApiParams]);
+  }, [externalStreamId, streamId, updateApiParams]);
 
   const handleDenoiseIndexChange = useCallback((index: number, value: number) => {
     setParams((prev) => ({
@@ -1003,10 +1090,36 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       },
     }));
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    if (isStreaming) {
+    // Update parameters if we have a stream ID (either from external or local streaming)
+    const currentStreamId = externalStreamId || streamId;
+    if (currentStreamId) {
       debounceTimerRef.current = setTimeout(() => updateApiParams(), 350);
     }
-  }, [isStreaming, updateApiParams]);
+  }, [externalStreamId, streamId, updateApiParams]);
+
+  // Sync external stream ID and API key with internal state
+  useEffect(() => {
+    if (externalStreamId && externalStreamId !== streamId) {
+      setStreamId(externalStreamId);
+      // If we have an external stream ID, we should try to get the playback ID
+      // This would require an API call to get stream details, but for now we'll just use the stream ID
+      setPlaybackId(externalStreamId); // This is a placeholder - ideally we'd fetch the actual playback ID
+    }
+  }, [externalStreamId, streamId]);
+
+  // Sync external API key with internal input field
+  useEffect(() => {
+    if (externalApiKey && apiKeyRef.current) {
+      apiKeyRef.current.value = externalApiKey;
+    }
+  }, [externalApiKey]);
+
+  // Sync external prompt with internal state
+  useEffect(() => {
+    if (externalPrompt !== undefined && externalPrompt !== daydreamPrompt) {
+      setDaydreamPrompt(externalPrompt);
+    }
+  }, [externalPrompt, daydreamPrompt]);
 
   useEffect(() => {
     return () => {
@@ -1137,7 +1250,8 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
 
   // Map audio level into a subtle param change while streaming
   useEffect(() => {
-    if (!isStreaming || !isMicActive && !isDemoPlaying) return;
+    const currentStreamId = externalStreamId || streamId;
+    if (!currentStreamId || !isMicActive && !isDemoPlaying) return;
     // Use audio level to drive the last controlnet conditioning scale as a fun demo
     const scaled = Math.min(1, Math.max(0, audioLevel * 2 * audioReactivity));
     setParams((prev) => {
@@ -1156,7 +1270,7 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       }
       return prev;
     });
-  }, [audioLevel, audioReactivity, isStreaming, isMicActive, isDemoPlaying]);
+  }, [audioLevel, audioReactivity, externalStreamId, streamId, isMicActive, isDemoPlaying]);
 
   // --- Speech recognition ---
   const startRecognition = useCallback(() => {
@@ -1185,10 +1299,116 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
     setIsRecognizing(false);
   }, []);
 
+  // Daydream prompt submission
+  const handleSubmitPrompt = useCallback(async () => {
+    setPromptStatus("");
+    const currentStreamId = externalStreamId || streamId;
+    if (!currentStreamId?.trim()) {
+      setPromptStatus("Enter a Stream ID.");
+      return;
+    }
+    if (!daydreamPrompt.trim()) {
+      setPromptStatus("Enter a prompt.");
+      return;
+    }
+    const envToken = import.meta.env.VITE_DAYDREAM_API_TOKEN as string | undefined;
+    const rawKey = externalApiKey || apiKeyRef.current?.value || "";
+    const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim() || envToken;
+    if (!apiKey) {
+      setPromptStatus("Enter an API key or set VITE_DAYDREAM_API_TOKEN.");
+      return;
+    }
+    setIsSubmittingPrompt(true);
+    setPromptStatus("Submitting...");
+    try {
+      const response = await fetch(`https://api.daydream.live/beta/streams/${currentStreamId}/prompts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model_id: "streamdiffusion",
+          pipeline: "live-video-to-video",
+          params: {
+            model_id: "stabilityai/sd-turbo",
+            prompt: daydreamPrompt || params.params.prompt,
+            prompt_interpolation_method: "slerp",
+            normalize_prompt_weights: true,
+            normalize_seed_weights: true,
+            negative_prompt: "blurry, low quality, flat, 2d",
+            num_inference_steps: 50,
+            seed: 42,
+            t_index_list: [0, 8, 17],
+            controlnets: [
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-openpose-diffusers",
+                preprocessor: "pose_tensorrt",
+                preprocessor_params: {}
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-hed-diffusers",
+                preprocessor: "soft_edge",
+                preprocessor_params: {}
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-canny-diffusers",
+                preprocessor: "canny",
+                preprocessor_params: {
+                  high_threshold: 200,
+                  low_threshold: 100
+                }
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-depth-diffusers",
+                preprocessor: "depth_tensorrt",
+                preprocessor_params: {}
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-color-diffusers",
+                preprocessor: "passthrough",
+                preprocessor_params: {}
+              }
+            ]
+          }
+        }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(`API Error: ${error.message || response.statusText}`);
+      }
+      setPromptStatus("Prompt submitted successfully!");
+    } catch (e: any) {
+      setPromptStatus(`Error: ${e?.message || "Unknown error"}`);
+    } finally {
+      setIsSubmittingPrompt(false);
+    }
+  }, [externalStreamId, streamId, daydreamPrompt, externalApiKey]);
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
+        <div className="xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="rounded-xl border border-gray-800 overflow-hidden bg-gray-900/70">
             <div className="flex items-center justify-between text-xs text-gray-400 px-3 py-2 border-b border-gray-800">
               <span>Your Webcam</span>
@@ -1242,7 +1462,49 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
           </div>
         </div>
 
-        <div className="space-y-3">
+        {/* Right Side Controls */}
+        <div className="xl:col-span-1 space-y-4">
+          {/* Daydream Prompt Section */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold">AI Generation</h4>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Prompt</label>
+              <textarea
+                value={daydreamPrompt}
+                onChange={(e) => {
+                  setDaydreamPrompt(e.target.value);
+                  onPromptChange?.(e.target.value);
+                }}
+                placeholder="Describe what to generate..."
+                rows={3}
+                className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm"
+              />
+            </div>
+            <button
+              onClick={handleSubmitPrompt}
+              disabled={isSubmittingPrompt}
+              className={`w-full py-2 px-3 rounded text-sm font-medium transition-colors ${
+                isSubmittingPrompt ? "bg-gray-700" : "bg-indigo-600 hover:bg-indigo-700"
+              }`}
+            >
+              {isSubmittingPrompt ? "Submitting..." : "Submit Prompt"}
+            </button>
+            {promptStatus && (
+              <p className="text-xs text-center text-gray-400">{promptStatus}</p>
+            )}
+          </div>
+
+          {/* Fluid Controls Section */}
+          <FluidControls 
+            onStreamReady={(stream) => {
+              // Handle stream ready if needed
+              console.log("Fluid controls stream ready:", stream);
+            }}
+            className="space-y-4"
+          />
+        </div>
+
+        <div className="xl:col-span-3 space-y-3">
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-xs text-gray-400 mb-1">API Key</label>
@@ -1365,14 +1627,16 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
             <p className="text-[11px] text-gray-500">How much audio affects the AI rendering</p>
           </div>
 
-          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
+          {/* <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
             <label className="block text-xs text-gray-400 mb-1">Prompt</label>
             <input value={params.params.prompt} onChange={(e) => handleParamChange("prompt", e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
           </div>
           <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
             <label className="block text-xs text-gray-400 mb-1">Negative Prompt</label>
             <input value={params.params.negative_prompt} onChange={(e) => handleParamChange("negative_prompt", e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
-          </div>
+          </div> */}
+
+          
 
           <div className="grid grid-cols-3 gap-2">
             <div>
