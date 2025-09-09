@@ -1,0 +1,5 @@
+{
+	"dependencies": {
+		"@openreplay/tracker": "^16.4.8"
+	}
+}

@@ -361,11 +361,19 @@
           els.startStop.disabled = true;
           try {
             // 1) Create stream
-            const res = await fetch(`${API_BASE}/v1/streams`, {
+            let res = await fetch(`${API_BASE}/v1/streams`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-              body: JSON.stringify({ pipeline_id: pipelineId })
+              body: JSON.stringify({ pipeline_params: { pipeline_id: pipelineId }, name: 'StreamDiffusion Playground', output_rtmp_url: '' })
             });
+            if (!res.ok && res.status !== 401) {
+              // Fallback to legacy schema
+              res = await fetch(`${API_BASE}/v1/streams`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+                body: JSON.stringify({ pipeline_id: pipelineId })
+              });
+            }
             if (!res.ok) {
               const err = await safeJson(res);
               throw new Error(`Create stream failed: ${err.message || res.statusText}`);
@@ -436,7 +444,7 @@
           await pc.setLocalDescription(offer);
           const res = await fetch(whipUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/sdp', 'Authorization': `Bearer ${API_KEY}` },
+            headers: { 'Content-Type': 'application/sdp' },
             body: pc.localDescription && pc.localDescription.sdp ? pc.localDescription.sdp : ''
           });
           if (res.status !== 201) throw new Error(`WHIP failed: ${res.status}`);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createSilentAudioTrack } from "../FluidCanvas/utils/audioTrack";
 
 type ControlNet = {
   name?: string;
@@ -30,13 +31,14 @@ type StreamParams = {
 
 const API_BASE_URL = "https://api.daydream.live";
 
-export function StreamRender() {
+export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: string | null) => void }) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [streamId, setStreamId] = useState<string | null>(null);
   const [whipUrl, setWhipUrl] = useState<string | null>(null);
   const [playbackId, setPlaybackId] = useState<string | null>(null);
+  const [pipelineInitializing, setPipelineInitializing] = useState(false);
 
   const apiKeyRef = useRef<HTMLInputElement | null>(null);
   const pipelineIdRef = useRef<HTMLInputElement | null>(null);
@@ -69,6 +71,19 @@ export function StreamRender() {
   const [showOverlay, setShowOverlay] = useState(true);
   const recognitionRef = useRef<any>(null);
 
+  // Health monitoring
+  const healthMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [lastHealthCheck, setLastHealthCheck] = useState<Date | null>(null);
+  
+  // Connection keepalive
+  const keepaliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  
+  // Debug and testing state
+  const [debugMode, setDebugMode] = useState(false);
+  const [customTurnServer, setCustomTurnServer] = useState("turn:relay1.expressturn.com:3480");
+  const [turnUsername, setTurnUsername] = useState("000000002072743325");
+  const [turnPassword, setTurnPassword] = useState("vuyZ+Z6uqI0EKMSo0JBl6OTWduI=");
+
   const [params, setParams] = useState<StreamParams>({
     model_id: "streamdiffusion",
     pipeline: "live-video-to-video",
@@ -97,7 +112,7 @@ export function StreamRender() {
     setError(null);
   }, []);
 
-  const mountPlayerIframe = useCallback((id: string | null) => {
+  const mountPlayerIframe = useCallback((id: string | null, retryCount = 0) => {
     const container = outputContainerRef.current;
     if (!container) return;
     container.innerHTML = "";
@@ -106,43 +121,450 @@ export function StreamRender() {
       return;
     }
     const iframe = document.createElement("iframe");
-    iframe.allow = "autoplay; fullscreen; picture-in-picture; clipboard-write";
+    iframe.allow = "autoplay; fullscreen; picture-in-picture; clipboard-write; camera; microphone";
     iframe.referrerPolicy = "origin";
     iframe.style.width = "100%";
     iframe.style.height = "320px";
-    iframe.src = `https://lvpr.tv/?v=${encodeURIComponent(id)}&lowLatency=force`;
+    iframe.style.border = "none";
+    iframe.style.borderRadius = "8px";
+    iframe.src = `https://lvpr.tv/?v=${encodeURIComponent(id)}&lowLatency=force&autoplay=true`;
+    
+    // Add error handling for iframe with retry logic
+    iframe.onerror = () => {
+      console.error("Failed to load iframe player, retry count:", retryCount);
+      if (retryCount < 3) {
+        console.log(`Retrying iframe load in 3 seconds... (${retryCount + 1}/3)`);
+        setTimeout(() => {
+          mountPlayerIframe(id, retryCount + 1);
+        }, 3000);
+      } else {
+        setError("Failed to load video player after multiple attempts. The stream may not be ready yet.");
+      }
+    };
+    
+    iframe.onload = () => {
+      console.log("Iframe player loaded successfully");
+    };
+    
     container.appendChild(iframe);
   }, []);
 
-  const startWhipClient = useCallback(async () => {
-    if (!whipUrl || !localStreamRef.current) return;
-    const apiKey = apiKeyRef.current?.value.trim() || "";
-    const rtcPeerConnection = new RTCPeerConnection();
+  const startWhipClient = useCallback(async (whipUrlParam?: string) => {
+    const actualWhipUrl = whipUrlParam || whipUrl;
+    console.log("startWhipClient called with:", { whipUrl: actualWhipUrl, hasLocalStream: !!localStreamRef.current });
+    console.log("WHIP URL type:", typeof actualWhipUrl, "Value:", actualWhipUrl);
+    
+    if (!actualWhipUrl || !localStreamRef.current) {
+      console.error("Missing WHIP URL or local stream:", { 
+        whipUrl: actualWhipUrl, 
+        whipUrlType: typeof actualWhipUrl,
+        whipUrlBool: !!actualWhipUrl,
+        localStream: !!localStreamRef.current 
+      });
+      setError("Missing WHIP URL or local stream. Please restart the stream.");
+      return;
+    }
+
+    console.log("Starting WHIP connection to:", actualWhipUrl);
+    
+    // Build ICE servers configuration with custom TURN server support
+    const iceServers = [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:stun3.l.google.com:19302" },
+      { urls: "stun:stun4.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+      { urls: "stun:openrelay.metered.ca:80" },
+      {
+        urls: "turn:turn.livepeer.cloud:80?transport=udp",
+        username: "livepeer",
+        credential: "livepeer"
+      },
+      {
+        urls: "turn:turn.livepeer.cloud:80?transport=tcp",
+        username: "livepeer",
+        credential: "livepeer"
+      },
+      {
+        urls: "turn:turn.livepeer.cloud:443?transport=tcp",
+        username: "livepeer",
+        credential: "livepeer"
+      },
+      // Add ExpressTURN as a reliable fallback
+      {
+        urls: "turn:relay1.expressturn.com:3480",
+        username: "000000002072743325",
+        credential: "vuyZ+Z6uqI0EKMSo0JBl6OTWduI="
+      }
+    ];
+    
+    // Add custom TURN server if configured and different from ExpressTURN
+    if (customTurnServer && customTurnServer !== "turn:relay1.expressturn.com:3480") {
+      if (turnUsername && turnPassword) {
+        iceServers.push({ urls: customTurnServer, username: turnUsername, credential: turnPassword });
+      } else {
+        iceServers.push({ urls: customTurnServer });
+      }
+      if (debugMode) console.log('Using additional custom TURN server:', customTurnServer);
+    } else if (debugMode) {
+      console.log('Using pre-configured ExpressTURN server');
+    }
+
+    const rtcPeerConnection = new RTCPeerConnection({
+      iceServers,
+      iceTransportPolicy: "all", // Change to "relay" to force TURN
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
+      iceCandidatePoolSize: 10
+    });
     rtcPeerConnectionRef.current = rtcPeerConnection;
-    localStreamRef.current.getVideoTracks().forEach((track) => {
+
+    // Add comprehensive connection state monitoring
+    rtcPeerConnection.onconnectionstatechange = () => {
+      if (debugMode) console.log("RTC Connection state:", rtcPeerConnection.connectionState);
+      
+      switch (rtcPeerConnection.connectionState) {
+        case "connecting":
+          setStatusWithLoading("Establishing WebRTC connection...");
+          break;
+        case "connected":
+          setStatusWithLoading("WebRTC connected! Initializing AI pipeline...");
+          setPipelineInitializing(true);
+          // Start keepalive monitoring when connected
+          startConnectionKeepalive();
+          if (debugMode) console.log("✅ WebRTC connection established successfully");
+          // Update status after pipeline initialization time
+          setTimeout(() => {
+            if (rtcPeerConnection.connectionState === "connected") {
+              setPipelineInitializing(false);
+              setStatusWithLoading("Streaming live!");
+            }
+          }, 30000);
+          break;
+        case "disconnected":
+          console.warn("WebRTC connection disconnected - attempting to maintain connection");
+          setStatusWithLoading("Connection lost - attempting to reconnect...");
+          // Don't immediately fail, give it more time to reconnect during AI pipeline initialization
+          const reconnectDelay = pipelineInitializing ? 30000 : 10000; // 30s if pipeline initializing, 10s otherwise
+          setTimeout(() => {
+            if (rtcPeerConnection.connectionState === "disconnected") {
+              if (debugMode) console.log(`Connection still disconnected after ${reconnectDelay/1000}s, attempting restart`);
+              attemptReconnection();
+            }
+          }, reconnectDelay);
+          break;
+        case "failed":
+          console.error("RTC Connection failed - attempting reconnection");
+          setStatusWithLoading("Connection failed - attempting reconnection...");
+          attemptReconnection();
+          break;
+        case "closed":
+          setStatusWithLoading("Connection closed");
+          break;
+      }
+    };
+
+    rtcPeerConnection.oniceconnectionstatechange = () => {
+      console.log("ICE Connection state:", rtcPeerConnection.iceConnectionState);
+      
+      switch (rtcPeerConnection.iceConnectionState) {
+        case "checking":
+          setStatusWithLoading("Checking network connectivity...");
+          break;
+        case "connected":
+        case "completed":
+          console.log("ICE connection successful");
+          setStatusWithLoading("Network connection established");
+          break;
+        case "disconnected":
+          console.warn("ICE connection disconnected - monitoring for reconnection");
+          setStatusWithLoading("Network disconnected - monitoring for reconnection...");
+          // Don't immediately fail, ICE can recover
+          break;
+        case "failed":
+          console.error("ICE connection failed - attempting ICE restart");
+          setStatusWithLoading("Network connection failed - attempting ICE restart...");
+          // Try ICE restart before giving up
+          try {
+            if (rtcPeerConnection.restartIce) {
+              console.log("Attempting ICE restart");
+              rtcPeerConnection.restartIce();
+              setStatusWithLoading("ICE restart initiated...");
+            }
+          } catch (e) {
+            console.error("ICE restart failed:", e);
+            attemptReconnection();
+          }
+          break;
+      }
+    };
+
+    // Add more detailed monitoring for debugging
+    rtcPeerConnection.onicegatheringstatechange = () => {
+      console.log("ICE Gathering state:", rtcPeerConnection.iceGatheringState);
+      if (rtcPeerConnection.iceGatheringState === "gathering") {
+        setStatusWithLoading("Gathering network candidates...");
+      }
+    };
+
+    rtcPeerConnection.onsignalingstatechange = () => {
+      console.log("Signaling state:", rtcPeerConnection.signalingState);
+    };
+
+    rtcPeerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        if (debugMode) {
+          console.log(`ICE candidate: ${event.candidate.type} - ${event.candidate.protocol} - ${event.candidate.address}:${event.candidate.port}`);
+        } else {
+          console.log("ICE Candidate:", event.candidate.type);
+        }
+      } else {
+        console.log("ICE gathering complete");
+      }
+    };
+
+    // Add all available tracks (video + audio) to the WHIP connection
+    const tracks = localStreamRef.current.getTracks();
+    console.log(`Adding ${tracks.length} tracks to WHIP connection:`, tracks.map(t => `${t.kind}: ${t.readyState}`));
+    
+    tracks.forEach((track) => {
       rtcPeerConnection.addTrack(track, localStreamRef.current!);
     });
+
     const offer = await rtcPeerConnection.createOffer();
     await rtcPeerConnection.setLocalDescription(offer);
-    const whipResponse = await fetch(whipUrl, {
+    
+    console.log("Sending WHIP offer, SDP length:", offer.sdp?.length);
+
+    const whipResponse = await fetch(actualWhipUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/sdp", Authorization: `Bearer ${apiKey}` },
+      // Per guidance: WHIP endpoint does not require Authorization header
+      headers: { "Content-Type": "application/sdp" },
       body: rtcPeerConnection.localDescription?.sdp || "",
     });
+
+    console.log("WHIP response status:", whipResponse.status);
+
     if (whipResponse.status !== 201) {
-      throw new Error(`WHIP connection failed with status: ${whipResponse.status}`);
+      const errorText = await whipResponse.text().catch(() => "");
+      console.error("WHIP failed:", { status: whipResponse.status, body: errorText });
+      setError(`WHIP connection failed with status: ${whipResponse.status}. ${errorText}`);
+      throw new Error(`WHIP connection failed with status: ${whipResponse.status}. ${errorText}`);
     }
+
     const answerSdp = await whipResponse.text();
+    console.log("Received WHIP answer, SDP length:", answerSdp.length);
+    
     await rtcPeerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp });
-  }, [whipUrl]);
+    console.log("WHIP connection established successfully");
+  }, [whipUrl, setStatusWithLoading, customTurnServer, turnUsername, turnPassword, debugMode]);
+
+  const attemptReconnection = useCallback(async () => {
+    console.log("Attempting WebRTC reconnection...");
+    setStatusWithLoading("Reconnecting...");
+    
+    try {
+      // Close existing connection
+      if (rtcPeerConnectionRef.current) {
+        rtcPeerConnectionRef.current.close();
+        rtcPeerConnectionRef.current = null;
+      }
+      
+      // Wait a moment before reconnecting
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Check if we still have a local stream
+      if (!localStreamRef.current) {
+        setError("Lost local video stream - please restart");
+        return;
+      }
+      
+      // Attempt to restart the WHIP client
+      if (whipUrl) {
+        console.log("Restarting WHIP client with URL:", whipUrl);
+        await startWhipClient(whipUrl);
+        setStatusWithLoading("Reconnection successful!");
+      } else {
+        setError("Lost WHIP URL - please restart stream");
+      }
+    } catch (error) {
+      console.error("Reconnection failed:", error);
+      setError(`Reconnection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setStatusWithLoading("Reconnection failed - please restart stream");
+    }
+  }, [whipUrl, startWhipClient, setStatusWithLoading]);
+
+  const testWebRTCConnectivity = useCallback(async () => {
+    setStatusWithLoading("Testing WebRTC connectivity...");
+    
+    try {
+      console.log('🧪 Starting WebRTC connectivity test...');
+      
+      // Test 1: Check WebRTC support
+      if (!window.RTCPeerConnection) {
+        throw new Error('WebRTC not supported in this browser');
+      }
+      if (debugMode) console.log('✅ WebRTC is supported');
+      
+      // Build ICE servers configuration
+      const iceServers: RTCIceServer[] = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        // Add ExpressTURN for reliable connectivity
+        {
+          urls: 'turn:relay1.expressturn.com:3480',
+          username: '000000002072743325',
+          credential: 'vuyZ+Z6uqI0EKMSo0JBl6OTWduI='
+        }
+      ];
+      
+      // Add custom TURN server if configured and different from ExpressTURN
+      if (customTurnServer && customTurnServer !== 'turn:relay1.expressturn.com:3480') {
+        if (turnUsername && turnPassword) {
+          iceServers.push({ urls: customTurnServer, username: turnUsername, credential: turnPassword });
+        } else {
+          iceServers.push({ urls: customTurnServer });
+        }
+        if (debugMode) console.log('✅ Additional custom TURN server configured:', customTurnServer);
+      } else if (debugMode) {
+        console.log('✅ Using pre-configured ExpressTURN server');
+      }
+      
+      // Test 2: Create peer connection and test ICE gathering
+      const pc = new RTCPeerConnection({
+        iceServers: iceServers,
+        iceCandidatePoolSize: 10
+      });
+      
+      let iceGatheringComplete = false;
+      const candidates: RTCIceCandidate[] = [];
+      
+      pc.onicegatheringstatechange = () => {
+        if (debugMode) console.log('ICE gathering state:', pc.iceGatheringState);
+        if (pc.iceGatheringState === 'complete') {
+          iceGatheringComplete = true;
+        }
+      };
+      
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          candidates.push(event.candidate);
+          if (debugMode) {
+            console.log(`ICE candidate: ${event.candidate.type} - ${event.candidate.protocol} - ${event.candidate.address}`);
+          }
+        }
+      };
+      
+      // Create offer to trigger ICE gathering
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (debugMode) console.log('✅ Created test offer');
+      
+      // Wait for ICE gathering to complete
+      await new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (iceGatheringComplete || pc.iceGatheringState === 'complete') {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+        
+        // Timeout after 10 seconds
+        setTimeout(() => {
+          clearInterval(checkInterval);
+          resolve();
+        }, 10000);
+      });
+      
+      // Analyze candidate types
+      const hostCandidates = candidates.filter((c) => c.type === 'host').length;
+      const srflxCandidates = candidates.filter((c) => c.type === 'srflx').length;
+      const relayCandidates = candidates.filter((c) => c.type === 'relay').length;
+      
+      if (debugMode) {
+        console.log(`✅ Found ${candidates.length} ICE candidates:`);
+        console.log(`  - Host: ${hostCandidates}`);
+        console.log(`  - STUN (srflx): ${srflxCandidates}`);
+        console.log(`  - TURN (relay): ${relayCandidates}`);
+      }
+      
+      // Determine connectivity quality and provide feedback
+      if (candidates.length === 0) {
+        setError('WebRTC test failed: No ICE candidates found. Check firewall/network settings.');
+        setStatusWithLoading('WebRTC test failed - network connectivity issue');
+      } else if (relayCandidates > 0) {
+        setStatusWithLoading(`WebRTC test passed! TURN relay available (${candidates.length} candidates)`);
+      } else if (srflxCandidates > 0) {
+        setStatusWithLoading(`WebRTC test passed! STUN connectivity available (${candidates.length} candidates)`);
+      } else if (hostCandidates > 0) {
+        setStatusWithLoading(`WebRTC test warning: Only local candidates (${hostCandidates}). May need TURN server.`);
+      }
+      
+      // Clean up
+      pc.close();
+      
+    } catch (error) {
+      console.error('❌ WebRTC test failed:', error);
+      setError(`WebRTC test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setStatusWithLoading('WebRTC test failed');
+    }
+  }, [customTurnServer, turnUsername, turnPassword, debugMode, setStatusWithLoading]);
+
+  const checkStreamHealth = useCallback(async () => {
+    if (!streamId) return null;
+    
+    try {
+      const rawKey = apiKeyRef.current?.value || "";
+      const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
+      
+      // Use correct Daydream stream status endpoint
+      const response = await fetch(`https://api.daydream.live/v1/streams/${streamId}/status`, {
+        headers: { "Authorization": `Bearer ${apiKey}` }
+      });
+      
+      if (response.ok) {
+        const streamStatus = await response.json();
+        console.log("Daydream stream status:", streamStatus);
+        return streamStatus;
+      } else {
+        const errorText = await response.text().catch(() => "");
+        console.warn("Stream status check failed:", response.status, errorText);
+        console.log("Checking stream status for ID:", streamId);
+        console.log("Full URL:", `https://api.daydream.live/v1/streams/${streamId}/status`);
+        return null;
+      }
+    } catch (e) {
+      console.warn("Stream health check failed:", e);
+      return null;
+    }
+  }, [streamId]);
 
   const updateApiParams = useCallback(async () => {
     if (!streamId) return;
-    setStatusWithLoading("Updating params...");
+    setStatusWithLoading("Updating AI parameters...");
+    
     try {
-      const apiKey = apiKeyRef.current?.value.trim() || "";
+      const rawKey = apiKeyRef.current?.value || "";
+      const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
+      
+      // Check stream health first via Livepeer playback API
+      const playbackHealth = await checkStreamHealth();
+      if (playbackHealth && playbackHealth.type === 'offline') {
+        console.warn("Stream is offline, parameters may not take effect");
+        setStatusWithLoading("Warning: Stream offline - parameters may not apply");
+      }
+      
       const payload: StreamParams = JSON.parse(JSON.stringify(params));
       payload.params.controlnets.forEach((cn) => delete cn.name);
+      
+      console.log("Sending parameters to AI pipeline:", payload);
+      
       const response = await fetch(`${API_BASE_URL}/beta/streams/${streamId}/prompts`, {
         method: "POST",
         headers: {
@@ -151,47 +573,245 @@ export function StreamRender() {
         },
         body: JSON.stringify(payload),
       });
+      
       if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(`API Error: ${error.message || response.statusText}`);
+        const errorText = await response.text().catch(() => "");
+        let errorMessage = `HTTP ${response.status}`;
+        
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.message || errorText || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        
+        throw new Error(`API Error: ${errorMessage}`);
       }
-      setStatusWithLoading("Streaming live!");
+      
+      console.log("AI parameters updated successfully");
+      setStatusWithLoading("AI parameters updated - processing...");
+      
+      // Give some time for the parameters to take effect
+      setTimeout(() => {
+        if (isStreaming) {
+          setStatusWithLoading("Streaming live! AI effects active.");
+        }
+      }, 3000);
+      
     } catch (e: any) {
+      console.error("Parameter update failed:", e);
       setError(e?.message || "Unknown error");
-      setStatusWithLoading(`Update failed: ${e?.message || "Unknown error"}`);
+      setStatusWithLoading(`Parameter update failed: ${e?.message || "Unknown error"}`);
     }
-  }, [params, setStatusWithLoading, streamId]);
+  }, [params, setStatusWithLoading, streamId, checkStreamHealth, isStreaming]);
 
   const startStream = useCallback(async () => {
-    const apiKey = apiKeyRef.current?.value.trim() || "";
+    const rawKey = apiKeyRef.current?.value || "";
+    const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
     const pipelineId = pipelineIdRef.current?.value.trim() || "";
     if (!apiKey) { setError("Enter your API key."); return; }
+    if (apiKey.length < 16) {
+      setError("API key looks too short. Paste the raw key (no 'Bearer').");
+      return;
+    }
     if (!pipelineId) { setError("Enter a pipeline id."); return; }
     setStatusWithLoading("Starting stream...");
     try {
+      try {
+        const masked = apiKey.length >= 8 ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : "(short)";
+        console.debug("[Daydream] Using API key (masked):", masked);
+      } catch {}
+      // Create stream with correct API structure as per Daydream documentation
+      const createStreamBody = {
+        pipeline_id: pipelineId
+      };
+      
+      console.log("Creating stream with params:", createStreamBody);
+      
       const response = await fetch(`${API_BASE_URL}/v1/streams`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ pipeline_id: pipelineId }),
+        headers: { 
+          "Content-Type": "application/json", 
+          "Authorization": `Bearer ${apiKey}` 
+        },
+        body: JSON.stringify(createStreamBody),
       });
       if (!response.ok) {
+        if (response.status === 401) {
+          setError("401 Invalid access token. Paste the raw API key (no 'Bearer') or regenerate it.");
+          setStatusWithLoading("Error: Unauthorized (check API key)");
+          return;
+        }
         const error = await response.json().catch(() => ({}));
         throw new Error(`API Error: ${error.message || response.statusText}`);
       }
       const streamData = await response.json();
+      console.log("Stream created successfully:", streamData);
+      console.log("Stream ID:", streamData.id);
+      console.log("WHIP URL:", streamData.whip_url);
+      console.log("Output Playback ID:", streamData.output_playback_id);
+      console.log("Full response keys:", Object.keys(streamData));
+      console.log("Full response structure:", JSON.stringify(streamData, null, 2));
+      
+      // Check if the response has the expected structure
+      if (!streamData.id) {
+        throw new Error(`Missing stream ID in response: ${JSON.stringify(streamData)}`);
+      }
+      if (!streamData.whip_url) {
+        console.error("Missing whip_url in response. Available keys:", Object.keys(streamData));
+        console.error("Full response:", JSON.stringify(streamData, null, 2));
+        
+      // Construct WHIP URL from stream_key if whip_url is missing
+      if (streamData.stream_key) {
+        const whipUrl = `https://ai.livepeer.com/live/video-to-video/${streamData.stream_key}/whip`;
+        console.log(`Constructed WHIP URL from stream_key:`, whipUrl);
+        streamData.whip_url = whipUrl;
+      } else {
+        // Check for alternative field names as fallback
+        const possibleWhipFields = ['whipUrl', 'whip_endpoint', 'ingest_url'];
+        let foundWhipUrl = null;
+        for (const field of possibleWhipFields) {
+          if (streamData[field]) {
+            console.log(`Found WHIP URL in field '${field}':`, streamData[field]);
+            foundWhipUrl = streamData[field];
+            break;
+          }
+        }
+        
+        if (foundWhipUrl) {
+          streamData.whip_url = foundWhipUrl;
+        } else {
+          throw new Error(`Missing WHIP URL and stream_key in response. Available fields: ${Object.keys(streamData).join(', ')}`);
+        }
+      }
+      }
+      if (!streamData.output_playback_id) {
+        throw new Error(`Missing output_playback_id in response: ${JSON.stringify(streamData)}`);
+      }
+      
       setStreamId(streamData.id);
       setWhipUrl(streamData.whip_url);
       setPlaybackId(streamData.output_playback_id);
+      try { onStreamIdChange?.(streamData.id); } catch {}
 
-      const media = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      console.log("Requesting webcam access...");
+      const media = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } }, 
+        audio: false 
+      });
+
+      // Verify we got video tracks
+      const videoTracks = media.getVideoTracks();
+      const audioTracks = media.getAudioTracks();
+      console.log(`Got ${videoTracks.length} video tracks and ${audioTracks.length} audio tracks`);
+      
+      if (videoTracks.length === 0) {
+        throw new Error("No video tracks available from webcam. Please check camera permissions.");
+      }
+
+      // Set contentHint on the video track for better motion handling
+      try {
+        const vtrack = videoTracks[0] as any;
+        if (vtrack && vtrack.contentHint !== undefined) {
+          vtrack.contentHint = "motion";
+        }
+        console.log("Video track settings:", vtrack.getSettings());
+      } catch {}
+
+      // Add a silent audio track to improve WHIP compatibility and downstream expectations
+      try {
+        const silent = createSilentAudioTrack();
+        media.addTrack(silent);
+        console.log("Added silent audio track");
+      } catch {}
+
       localStreamRef.current = media;
-      if (localVideoRef.current) localVideoRef.current.srcObject = media;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = media;
+        console.log("Local video element updated with stream");
+      }
 
-      await startWhipClient();
-      mountPlayerIframe(streamData.output_playback_id);
+      // Wait a bit before starting WHIP to ensure stream is ready
+      setStatusWithLoading("Preparing stream...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Pass the WHIP URL directly instead of relying on state
+      await startWhipClient(streamData.whip_url);
+      
+      // Wait a moment before mounting the player to ensure stream is ready
+      setTimeout(() => {
+        mountPlayerIframe(streamData.output_playback_id);
+      }, 2000);
+      
       setIsStreaming(true);
-      setStatusWithLoading("Streaming live!");
-      await updateApiParams();
+      setPipelineInitializing(true);
+      setStatusWithLoading("Initializing AI pipeline (30-60 seconds)...");
+      
+      // Enhanced AI pipeline initialization with extended timeout for slow initialization
+      const initializePipeline = async (retries = 25, delay = 5000) => {
+        console.log(`Initializing AI pipeline (attempt ${26 - retries}/25)`);
+        setStatusWithLoading(`Initializing AI pipeline... (${26 - retries}/25)`);
+        
+        try {
+          // Check Daydream stream status using correct API endpoint
+          const streamStatus = await checkStreamHealth();
+          
+          if (!streamStatus) {
+            if (retries > 0) {
+              console.log(`Stream status not available, retrying in ${delay/1000}s... (${retries} retries left)`);
+              setTimeout(() => initializePipeline(retries - 1, delay), delay);
+              return;
+            } else {
+              throw new Error("Stream status failed to become available within timeout period");
+            }
+          }
+          
+          // Check if stream is active/ready for AI processing
+          const isStreamReady = streamStatus.status === 'active' || streamStatus.state === 'ready' || streamStatus.pipeline_status === 'active';
+          
+          if (!isStreamReady) {
+            if (retries > 0) {
+              console.log(`Stream not ready (status: ${streamStatus.status || streamStatus.state || 'unknown'}), retrying in ${delay/1000}s... (${retries} retries left)`);
+              setTimeout(() => initializePipeline(retries - 1, delay), delay);
+              return;
+            } else {
+              throw new Error(`Stream failed to become ready within timeout period (final status: ${streamStatus.status || streamStatus.state || 'unknown'})`);
+            }
+          }
+          
+          console.log("Daydream stream is ready:", streamStatus.status || streamStatus.state);
+          
+          // Stream is ready, now send parameters
+          await updateApiParams();
+          console.log("AI pipeline parameters sent successfully");
+          setStatusWithLoading("AI pipeline connected! Processing...");
+          
+          // Give the pipeline time to process
+          setTimeout(() => {
+            if (isStreaming) {
+              setPipelineInitializing(false);
+              setStatusWithLoading("Streaming live! AI effects active.");
+              // Start health monitoring once everything is working
+              startHealthMonitoring();
+            }
+          }, 8000);
+          
+        } catch (e: any) {
+          console.error("Pipeline initialization error:", e);
+          
+          if (retries > 0 && (e.message?.includes("not ready") || e.message?.includes("404") || e.message?.includes("503"))) {
+            console.log(`Pipeline not ready, retrying in ${delay/1000}s... (${retries} retries left)`);
+            setTimeout(() => initializePipeline(retries - 1, Math.min(delay + 1000, 10000)), delay);
+          } else {
+            setError(`AI pipeline initialization failed: ${e.message}`);
+            setStatusWithLoading("AI pipeline failed to initialize");
+            setPipelineInitializing(false);
+          }
+        }
+      };
+      
+      // Start pipeline initialization after WebRTC is established
+      setTimeout(() => initializePipeline(), 8000);
     } catch (e: any) {
       setError(e?.message || "Unknown error");
       setStatusWithLoading(`Error: ${e?.message || "Unknown error"}`);
@@ -199,8 +819,91 @@ export function StreamRender() {
     }
   }, [mountPlayerIframe, setStatusWithLoading, startWhipClient, updateApiParams]);
 
+  const startHealthMonitoring = useCallback(() => {
+    if (healthMonitorRef.current) {
+      clearInterval(healthMonitorRef.current);
+    }
+    
+    console.log("Starting stream health monitoring");
+    healthMonitorRef.current = setInterval(async () => {
+      if (!streamId || !isStreaming) return;
+      
+      try {
+        const streamStatus = await checkStreamHealth();
+        setLastHealthCheck(new Date());
+        
+        if (streamStatus) {
+          const isActive = streamStatus.status === 'active' || streamStatus.state === 'ready' || streamStatus.pipeline_status === 'active';
+          
+          if (!isActive && isStreaming) {
+            console.warn("Stream has become inactive");
+            setStatusWithLoading("Warning: AI pipeline inactive - effects may not be working");
+          } else if (isActive && isStreaming && !pipelineInitializing) {
+            setStatusWithLoading("Streaming live! AI effects active.");
+          }
+        } else {
+          console.warn("Stream status not available");
+          setStatusWithLoading("Warning: Cannot check stream status");
+        }
+      } catch (e) {
+        console.warn("Health monitoring check failed:", e);
+      }
+    }, 15000); // Check every 15 seconds
+  }, [streamId, isStreaming, checkStreamHealth, pipelineInitializing]);
+
+  const stopHealthMonitoring = useCallback(() => {
+    if (healthMonitorRef.current) {
+      clearInterval(healthMonitorRef.current);
+      healthMonitorRef.current = null;
+      console.log("Stopped stream health monitoring");
+    }
+  }, []);
+
+  const startConnectionKeepalive = useCallback(() => {
+    if (keepaliveRef.current) {
+      clearInterval(keepaliveRef.current);
+    }
+    
+    console.log("Starting WebRTC connection keepalive");
+    keepaliveRef.current = setInterval(() => {
+      if (rtcPeerConnectionRef.current) {
+        const pc = rtcPeerConnectionRef.current;
+        console.log(`Connection keepalive: ${pc.connectionState} / ${pc.iceConnectionState}`);
+        
+        // If connection is stable, log stats
+        if (pc.connectionState === 'connected') {
+          pc.getStats().then(stats => {
+            stats.forEach(report => {
+              if (report.type === 'outbound-rtp' && report.mediaType === 'video') {
+                console.log(`Video stats: ${report.bytesSent} bytes sent, ${report.packetsSent} packets`);
+              }
+            });
+          }).catch(e => console.warn("Stats error:", e));
+        }
+        
+        // Monitor for connection issues
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          console.warn("Keepalive detected connection issue");
+        }
+      }
+    }, 10000); // Check every 10 seconds
+  }, []);
+
+  const stopConnectionKeepalive = useCallback(() => {
+    if (keepaliveRef.current) {
+      clearInterval(keepaliveRef.current);
+      keepaliveRef.current = null;
+      console.log("Stopped WebRTC connection keepalive");
+    }
+  }, []);
+
   const stopStream = useCallback(async () => {
     setStatusWithLoading("Stopping...");
+    
+    // Stop health monitoring and keepalive
+    stopHealthMonitoring();
+    stopConnectionKeepalive();
+    
     try {
       if (rtcPeerConnectionRef.current) {
         try { rtcPeerConnectionRef.current.close(); } catch {}
@@ -212,18 +915,23 @@ export function StreamRender() {
       }
     } finally {
       setIsStreaming(false);
+      setPipelineInitializing(false);
       setStreamId(null);
       setWhipUrl(null);
       setPlaybackId(null);
+      setLastHealthCheck(null);
       mountPlayerIframe(null);
       setStatusWithLoading("");
+      try { onStreamIdChange?.(null); } catch {}
     }
-  }, [mountPlayerIframe, setStatusWithLoading]);
+  }, [mountPlayerIframe, setStatusWithLoading, stopHealthMonitoring]);
 
   const handleParamChange = useCallback((key: keyof StreamParams["params"], value: any) => {
     setParams((prev) => ({ ...prev, params: { ...prev.params, [key]: value } }));
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => { if (isStreaming) updateApiParams(); }, 350);
+    if (isStreaming) {
+      debounceTimerRef.current = setTimeout(() => updateApiParams(), 350);
+    }
   }, [isStreaming, updateApiParams]);
 
   const handleControlNetChange = useCallback((index: number, value: number) => {
@@ -235,7 +943,9 @@ export function StreamRender() {
       },
     }));
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => { if (isStreaming) updateApiParams(); }, 350);
+    if (isStreaming) {
+      debounceTimerRef.current = setTimeout(() => updateApiParams(), 350);
+    }
   }, [isStreaming, updateApiParams]);
 
   const handleDenoiseIndexChange = useCallback((index: number, value: number) => {
@@ -247,15 +957,19 @@ export function StreamRender() {
       },
     }));
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => { if (isStreaming) updateApiParams(); }, 350);
+    if (isStreaming) {
+      debounceTimerRef.current = setTimeout(() => updateApiParams(), 350);
+    }
   }, [isStreaming, updateApiParams]);
 
   useEffect(() => {
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      stopHealthMonitoring();
+      stopConnectionKeepalive();
       stopStream();
     };
-  }, [stopStream]);
+  }, [stopStream, stopHealthMonitoring, stopConnectionKeepalive]);
 
   // --- Audio input helpers ---
   const stopAudioProcessing = useCallback(() => {
@@ -377,19 +1091,26 @@ export function StreamRender() {
 
   // Map audio level into a subtle param change while streaming
   useEffect(() => {
-    if (!isStreaming) return;
+    if (!isStreaming || !isMicActive && !isDemoPlaying) return;
     // Use audio level to drive the last controlnet conditioning scale as a fun demo
     const scaled = Math.min(1, Math.max(0, audioLevel * 2 * audioReactivity));
-    setParams((prev) => ({
-      ...prev,
-      params: {
-        ...prev.params,
-        controlnets: prev.params.controlnets.map((cn, i) => i === 4 ? { ...cn, conditioning_scale: scaled } : cn),
-      },
-    }));
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => { if (isStreaming) updateApiParams(); }, 350);
-  }, [audioLevel, audioReactivity, isStreaming, updateApiParams]);
+    setParams((prev) => {
+      const newParams = {
+        ...prev,
+        params: {
+          ...prev.params,
+          controlnets: prev.params.controlnets.map((cn, i) => 
+            i === 4 ? { ...cn, conditioning_scale: scaled } : cn
+          ),
+        },
+      };
+      // Only update if value actually changed
+      if (prev.params.controlnets[4].conditioning_scale !== scaled) {
+        return newParams;
+      }
+      return prev;
+    });
+  }, [audioLevel, audioReactivity, isStreaming, isMicActive, isDemoPlaying]);
 
   // --- Speech recognition ---
   const startRecognition = useCallback(() => {
@@ -425,9 +1146,21 @@ export function StreamRender() {
           <div className="rounded-xl border border-gray-800 overflow-hidden bg-gray-900/70">
             <div className="flex items-center justify-between text-xs text-gray-400 px-3 py-2 border-b border-gray-800">
               <span>Your Webcam</span>
-              <span className="inline-flex items-center rounded-full bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300">input</span>
+              <span className="inline-flex items-center rounded-full bg-gray-800 px-2 py-0.5 text-[10px] text-gray-300">
+                {localStreamRef.current ? "active" : "input"}
+              </span>
             </div>
-            <video ref={localVideoRef} playsInline autoPlay muted className="w-full h-64 bg-black" />
+            <div className="relative">
+              <video ref={localVideoRef} playsInline autoPlay muted className="w-full h-64 bg-black" />
+              {!localStreamRef.current && isStreaming && (
+                <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                  <div className="text-center text-white">
+                    <div className="text-sm mb-1">Waiting for webcam...</div>
+                    <div className="text-xs text-gray-300">Check permissions</div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div className="rounded-xl border border-gray-800 overflow-hidden bg-gray-900/70 relative">
             <div className="flex items-center justify-between text-xs text-gray-400 px-3 py-2 border-b border-gray-800">
@@ -435,7 +1168,16 @@ export function StreamRender() {
               <span className="text-[11px] text-gray-500">{playbackId ? `Playback: ${playbackId}` : "No playback"}</span>
             </div>
             <div ref={outputContainerRef} className="w-full h-64 bg-black grid place-items-center">
-              <div ref={outputPlaceholderRef} className="text-sm text-gray-500">Start the stream to see output</div>
+              <div ref={outputPlaceholderRef} className="text-center">
+                {isStreaming && !playbackId ? (
+                  <>
+                    <div className="text-sm text-gray-400 mb-2">Creating stream...</div>
+                    <div className="text-xs text-gray-500">This may take a moment</div>
+                  </>
+                ) : !isStreaming ? (
+                  <div className="text-sm text-gray-500">Start the stream to see output</div>
+                ) : null}
+              </div>
             </div>
             {/* Speech/Text overlay */}
             {recognizedText && showOverlay && (
@@ -465,6 +1207,69 @@ export function StreamRender() {
               <input ref={pipelineIdRef} type="text" defaultValue="pip_qpUgXycjWF6YMeSL" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
             </div>
           </div>
+          
+          {/* Debug and Network Configuration */}
+          <div className="border-t border-gray-700 pt-3">
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                type="checkbox"
+                id="debugMode"
+                checked={debugMode}
+                onChange={(e) => setDebugMode(e.target.checked)}
+                className="rounded"
+              />
+              <label htmlFor="debugMode" className="text-sm font-medium text-gray-300">
+                🐛 Debug Mode
+              </label>
+            </div>
+            
+            <button
+              onClick={testWebRTCConnectivity}
+              className="w-full mb-3 px-3 py-2 rounded bg-orange-600 hover:bg-orange-700 text-white font-medium text-sm transition-colors"
+            >
+              🧪 Test WebRTC
+            </button>
+            
+            <details className="text-sm">
+              <summary className="cursor-pointer text-gray-400 hover:text-white mb-2">
+                ⚙️ Network Settings
+              </summary>
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-xs font-medium mb-1 text-gray-400">TURN Server</label>
+                  <input
+                    type="text"
+                    value={customTurnServer}
+                    onChange={(e) => setCustomTurnServer(e.target.value)}
+                    placeholder="turn:server.com:3478"
+                    className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-gray-400">Username</label>
+                    <input
+                      type="text"
+                      value={turnUsername}
+                      onChange={(e) => setTurnUsername(e.target.value)}
+                      placeholder="username"
+                      className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-gray-400">Password</label>
+                    <input
+                      type="password"
+                      value={turnPassword}
+                      onChange={(e) => setTurnPassword(e.target.value)}
+                      placeholder="password"
+                      className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
 
           <div className="grid grid-cols-2 gap-2 items-end">
             <button onClick={() => (isStreaming ? stopStream() : startStream())} className={`w-full py-2 px-4 rounded-lg font-medium transition-colors bg-gradient-to-r ${isStreaming ? "from-rose-600 to-red-700 hover:from-rose-600/90 hover:to-red-700/90" : "from-indigo-600 to-violet-700 hover:from-indigo-600/90 hover:to-violet-700/90"}`}>{isStreaming ? "Stop" : "Start"}</button>
@@ -473,6 +1278,14 @@ export function StreamRender() {
               <div className="text-xs">
                 {error ? (
                   <span className="inline-flex items-center rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 px-2 py-0.5">{error}</span>
+                ) : pipelineInitializing ? (
+                  <span className="inline-flex items-center rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5">
+                    <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3 text-amber-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    {status}
+                  </span>
                 ) : isStreaming ? (
                   <span className="inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5">{status || "Streaming live!"}</span>
                 ) : (

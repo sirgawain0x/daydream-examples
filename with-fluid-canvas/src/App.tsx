@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { FluidCanvas } from "./components/FluidCanvas";
 import StreamRender from "./components/StreamRender";
 
@@ -12,17 +12,230 @@ export default function App() {
   
   // Simple random motion state
   const [isRandomMotionActive, setIsRandomMotionActive] = useState(false);
+  
+  // Audio-reactive motion state
+  const [isAudioReactive, setIsAudioReactive] = useState(false);
+  const [audioSensitivity, setAudioSensitivity] = useState(0.5);
+  const [beatThreshold, setBeatThreshold] = useState(0.3);
+  const [audioLevels, setAudioLevels] = useState({ low: 0, mid: 0, high: 0, overall: 0 });
+  const [audioError, setAudioError] = useState<string | null>(null);
 
   // Daydream prompt state
   const [daydreamStreamId, setDaydreamStreamId] = useState("");
+  const [daydreamApiKey, setDaydreamApiKey] = useState("");
   const [daydreamPrompt, setDaydreamPrompt] = useState("");
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
   const [promptStatus, setPromptStatus] = useState<string>("");
+
+  // Prefill Daydream Stream ID from previous session if available
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("dd_stream_id");
+      if (saved && !daydreamStreamId) {
+        setDaydreamStreamId(saved);
+      }
+    } catch {}
+  }, []);
 
   const handleStreamReady = (mediaStream: MediaStream) => {
     console.log("Stream ready:", mediaStream);
     setStream(mediaStream);
   };
+
+  // Audio analysis and beat detection
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const dataArrayRef = useRef<Uint8Array | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const lastBeatTimeRef = useRef(0);
+  const beatHistoryRef = useRef<number[]>([]);
+  const smoothedLevelsRef = useRef({ low: 0, mid: 0, high: 0, overall: 0 });
+
+  const initAudioEngine = useCallback(() => {
+    if (!audioContextRef.current) {
+      try {
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        const audioContext = new AudioContext();
+        audioContextRef.current = audioContext;
+
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        analyserRef.current = analyser;
+
+        const bufferLength = analyser.frequencyBinCount;
+        dataArrayRef.current = new Uint8Array(bufferLength);
+      } catch (error) {
+        setAudioError("Could not create audio context. Your browser might not support it.");
+      }
+    }
+
+    if (audioContextRef.current && audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume();
+    }
+  }, []);
+
+  const analyzeAudio = useCallback(() => {
+    if (!analyserRef.current || !dataArrayRef.current) {
+      return;
+    }
+
+    analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+
+    const dataArray = dataArrayRef.current;
+    const bufferLength = dataArray.length;
+
+    // Calculate frequency bands
+    const lowFreq = dataArray.slice(0, Math.floor(bufferLength * 0.2));
+    const lowAvg = lowFreq.reduce((sum, val) => sum + val, 0) / lowFreq.length / 255;
+
+    const midFreq = dataArray.slice(
+      Math.floor(bufferLength * 0.2),
+      Math.floor(bufferLength * 0.7)
+    );
+    const midAvg = midFreq.reduce((sum, val) => sum + val, 0) / midFreq.length / 255;
+
+    const highFreq = dataArray.slice(Math.floor(bufferLength * 0.7));
+    const highAvg = highFreq.reduce((sum, val) => sum + val, 0) / highFreq.length / 255;
+
+    const overallVolume = dataArray.reduce((sum, val) => sum + val, 0) / bufferLength / 255;
+
+    // Smooth the levels
+    const smoothingFactor = 0.1;
+    smoothedLevelsRef.current.low += (lowAvg - smoothedLevelsRef.current.low) * smoothingFactor;
+    smoothedLevelsRef.current.mid += (midAvg - smoothedLevelsRef.current.mid) * smoothingFactor;
+    smoothedLevelsRef.current.high += (highAvg - smoothedLevelsRef.current.high) * smoothingFactor;
+    smoothedLevelsRef.current.overall += (overallVolume - smoothedLevelsRef.current.overall) * smoothingFactor;
+
+    const levels = {
+      low: smoothedLevelsRef.current.low,
+      mid: smoothedLevelsRef.current.mid,
+      high: smoothedLevelsRef.current.high,
+      overall: smoothedLevelsRef.current.overall,
+    };
+
+    setAudioLevels(levels);
+
+    // Beat detection - look for sudden spikes in low frequencies (bass)
+    const currentTime = Date.now();
+    const timeSinceLastBeat = currentTime - lastBeatTimeRef.current;
+    const minBeatInterval = 200; // Minimum 200ms between beats
+
+    if (timeSinceLastBeat > minBeatInterval) {
+      // Calculate average of recent levels for comparison
+      const recentLevels = beatHistoryRef.current.slice(-10);
+      const avgRecentLevel = recentLevels.length > 0 
+        ? recentLevels.reduce((sum, level) => sum + level, 0) / recentLevels.length 
+        : 0;
+
+      // Beat detected if current level is significantly higher than recent average
+      const beatThresholdValue = beatThreshold * audioSensitivity;
+      if (levels.low > avgRecentLevel + beatThresholdValue && levels.low > 0.1) {
+        lastBeatTimeRef.current = currentTime;
+        beatHistoryRef.current.push(levels.low);
+        
+        // Keep only last 20 beat levels
+        if (beatHistoryRef.current.length > 20) {
+          beatHistoryRef.current.shift();
+        }
+
+        // Trigger random motion on beat
+        if (isAudioReactive) {
+          // This will be handled by the FluidCanvas component
+          window.dispatchEvent(new CustomEvent('audioBeat', { 
+            detail: { 
+              intensity: levels.low,
+              levels: levels 
+            } 
+          }));
+        }
+      }
+    }
+
+    // Keep track of recent levels for beat detection
+    beatHistoryRef.current.push(levels.low);
+    if (beatHistoryRef.current.length > 20) {
+      beatHistoryRef.current.shift();
+    }
+
+    return levels;
+  }, [beatThreshold, audioSensitivity, isAudioReactive]);
+
+  const startMicrophone = useCallback(async () => {
+    initAudioEngine();
+
+    if (!audioContextRef.current || !analyserRef.current) {
+      setAudioError("Audio engine not initialized.");
+      return;
+    }
+
+    try {
+      setAudioError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+      micStreamRef.current = stream;
+
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      const gainNode = audioContextRef.current.createGain();
+      gainNode.gain.value = 2.0;
+
+      source.connect(gainNode);
+      gainNode.connect(analyserRef.current);
+
+      // Start audio analysis loop
+      const analyze = () => {
+        analyzeAudio();
+        if (isAudioReactive) {
+          animationFrameRef.current = requestAnimationFrame(analyze);
+        }
+      };
+      analyze();
+
+    } catch (error) {
+      setAudioError(
+        error instanceof Error ? error.message : "Failed to access microphone"
+      );
+    }
+  }, [initAudioEngine, analyzeAudio, isAudioReactive]);
+
+  const stopMicrophone = useCallback(() => {
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+    }
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    setAudioLevels({ low: 0, mid: 0, high: 0, overall: 0 });
+  }, []);
+
+  // Handle audio reactivity toggle
+  useEffect(() => {
+    if (isAudioReactive && !micStreamRef.current) {
+      startMicrophone();
+    } else if (!isAudioReactive && micStreamRef.current) {
+      stopMicrophone();
+    }
+    
+    // Audio reactivity state is now passed as props to FluidCanvas
+  }, [isAudioReactive, startMicrophone, stopMicrophone]);
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      stopMicrophone();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+    };
+  }, [stopMicrophone]);
 
   // Fun UI helpers
   function getRandomHexColor() {
@@ -85,23 +298,43 @@ export default function App() {
       setPromptStatus("Enter a prompt.");
       return;
     }
-    const token = import.meta.env.VITE_DAYDREAM_API_TOKEN as string | undefined;
-    const endpoint = (import.meta.env.VITE_DAYDREAM_PROMPT_ENDPOINT as string | undefined) || "https://api.daydream.dev/streamdiffusion/prompt";
+    const envToken = import.meta.env.VITE_DAYDREAM_API_TOKEN as string | undefined;
+    const inputKey = (daydreamApiKey || "").replace(/^Bearer\s+/i, "").trim();
+    const token = inputKey || envToken;
     if (!token) {
-      setPromptStatus("Missing VITE_DAYDREAM_API_TOKEN in env.");
+      setPromptStatus("Enter an API key or set VITE_DAYDREAM_API_TOKEN.");
       return;
     }
     try {
       setIsSubmittingPrompt(true);
-      const res = await fetch(endpoint, {
+      // Live prompts endpoint expects the full StreamDiffusion payload
+      const res = await fetch(`https://api.daydream.live/beta/streams/${encodeURIComponent(daydreamStreamId)}/prompts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          streamId: daydreamStreamId,
-          prompt: daydreamPrompt,
+          model_id: "streamdiffusion",
+          pipeline: "live-video-to-video",
+          params: {
+            model_id: "stabilityai/sd-turbo",
+            prompt: daydreamPrompt,
+            prompt_interpolation_method: "slerp",
+            normalize_prompt_weights: true,
+            normalize_seed_weights: true,
+            negative_prompt: "blurry, low quality, flat, 2d",
+            num_inference_steps: 50,
+            seed: 42,
+            t_index_list: [0, 8, 17],
+            controlnets: [
+              { preprocessor: "pose_tensorrt", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-openpose-diffusers", control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: {} },
+              { preprocessor: "soft_edge", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-hed-diffusers", control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: {} },
+              { preprocessor: "canny", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-canny-diffusers", control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: { low_threshold: 100, high_threshold: 200 } },
+              { preprocessor: "depth_tensorrt", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-depth-diffusers", control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: {} },
+              { preprocessor: "passthrough", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-color-diffusers", control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: {} },
+            ],
+          },
         }),
       });
       if (!res.ok) {
@@ -248,6 +481,100 @@ export default function App() {
               </p>
             </div>
 
+            {/* Audio-Reactive Motion Control */}
+            <div className="border-t border-gray-700 pt-4 mt-4">
+              <h3 className="text-lg font-semibold mb-3">🎵 Audio-Reactive Motion</h3>
+              
+              <button
+                onClick={() => setIsAudioReactive(!isAudioReactive)}
+                className={`w-full py-2 px-4 rounded font-medium transition-colors ${
+                  isAudioReactive
+                    ? "bg-red-600 hover:bg-red-700"
+                    : "bg-blue-600 hover:bg-blue-700"
+                }`}
+              >
+                {isAudioReactive ? "Stop Audio Reactivity" : "Start Audio Reactivity"}
+              </button>
+              
+              {audioError && (
+                <p className="text-xs text-red-400 mt-2">{audioError}</p>
+              )}
+              
+              {isAudioReactive && (
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Audio Sensitivity: {audioSensitivity.toFixed(1)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="2.0"
+                      step="0.1"
+                      value={audioSensitivity}
+                      onChange={(e) => setAudioSensitivity(Number(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium mb-2">
+                      Beat Threshold: {beatThreshold.toFixed(1)}
+                    </label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1.0"
+                      step="0.1"
+                      value={beatThreshold}
+                      onChange={(e) => setBeatThreshold(Number(e.target.value))}
+                      className="w-full"
+                    />
+                  </div>
+                  
+                  {/* Audio Level Visualization */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs text-gray-400">
+                      <span>Low</span>
+                      <span>Mid</span>
+                      <span>High</span>
+                      <span>Overall</span>
+                    </div>
+                    <div className="flex space-x-1">
+                      <div className="flex-1 bg-gray-800 rounded h-2">
+                        <div 
+                          className="bg-green-500 h-full rounded transition-all duration-100"
+                          style={{ width: `${audioLevels.low * 100}%` }}
+                        />
+                      </div>
+                      <div className="flex-1 bg-gray-800 rounded h-2">
+                        <div 
+                          className="bg-yellow-500 h-full rounded transition-all duration-100"
+                          style={{ width: `${audioLevels.mid * 100}%` }}
+                        />
+                      </div>
+                      <div className="flex-1 bg-gray-800 rounded h-2">
+                        <div 
+                          className="bg-red-500 h-full rounded transition-all duration-100"
+                          style={{ width: `${audioLevels.high * 100}%` }}
+                        />
+                      </div>
+                      <div className="flex-1 bg-gray-800 rounded h-2">
+                        <div 
+                          className="bg-blue-500 h-full rounded transition-all duration-100"
+                          style={{ width: `${audioLevels.overall * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              <p className="text-xs text-gray-400 mt-2">
+                When active, random motion and mouse interactions will sync to the beat of audio from your microphone
+              </p>
+            </div>
+
             <div className="text-sm text-gray-400">
               <p>Stream Status: {stream ? "Active" : "Inactive"}</p>
               {stream && <p>Tracks: {stream.getTracks().length}</p>}
@@ -272,14 +599,21 @@ export default function App() {
                   enableBloom={true}
                   bloomIntensity={0.5}
                   enableSunrays={true}
-                  autoGenerateSplats={isRandomMotionActive}
+                  autoGenerateSplats={isRandomMotionActive && !isAudioReactive}
                   initialSplatCount={isRandomMotionActive ? 3 : 5}
-                  randomSplatsIntervalMs={isRandomMotionActive ? 800 : 0}
+                  randomSplatsIntervalMs={isRandomMotionActive && !isAudioReactive ? 800 : 0}
+                  isAudioReactive={isAudioReactive}
+                  audioLevels={audioLevels}
                 />
                 </div>
               </div>
               <div className="mt-4 text-center text-gray-400">
-                <p>Click and drag to create fluid effects • Use Random Motion for automated effects</p>
+                <p>Click and drag to create fluid effects • Use Random Motion for automated effects • Enable Audio Reactivity to sync with music beats</p>
+                {isAudioReactive && (
+                  <p className="text-xs text-blue-400 mt-2 animate-pulse">
+                    🎵 Audio reactivity active - mouse interactions enhanced by music!
+                  </p>
+                )}
               </div>
             </div>
 
@@ -293,6 +627,16 @@ export default function App() {
                   value={daydreamStreamId}
                   onChange={(e) => setDaydreamStreamId(e.target.value)}
                   placeholder="stream_123..."
+                  className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">API Key</label>
+                <input
+                  type="password"
+                  value={daydreamApiKey}
+                  onChange={(e) => setDaydreamApiKey(e.target.value)}
+                  placeholder="Paste API key or use VITE_DAYDREAM_API_TOKEN"
                   className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2"
                 />
               </div>
@@ -319,14 +663,21 @@ export default function App() {
                 <p className="text-xs text-gray-400">{promptStatus}</p>
               )}
               <p className="text-[11px] text-gray-500">
-                Uses VITE_DAYDREAM_API_TOKEN and optional VITE_DAYDREAM_PROMPT_ENDPOINT.
+                Uses API Key from input or VITE_DAYDREAM_API_TOKEN env.
               </p>
             </div>
           </div>
 
           {/* Right: Stream player + controls */}
           <div className="space-y-4">
-            <StreamRender />
+            <StreamRender onStreamIdChange={(id) => {
+              const v = id ?? "";
+              setDaydreamStreamId(v);
+              try {
+                if (v) localStorage.setItem("dd_stream_id", v);
+                else localStorage.removeItem("dd_stream_id");
+              } catch {}
+            }} />
           </div>
         </div>
       </div>

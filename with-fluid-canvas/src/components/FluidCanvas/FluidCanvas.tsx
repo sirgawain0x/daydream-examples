@@ -67,6 +67,8 @@ export const FluidCanvas = ({
   className = "",
   style = {},
   randomSplatsIntervalMs = 0,
+  isAudioReactive = false,
+  audioLevels = { low: 0, mid: 0, high: 0, overall: 0 },
 }: FluidCanvasProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationIdRef = useRef<number | null>(null);
@@ -133,7 +135,7 @@ export const FluidCanvas = ({
     render(refs);
   }, [width, height]);
 
-  const { isBackgroundStreaming } = useBackgroundStreaming({
+  useBackgroundStreaming({
     onBackgroundFrame: renderBackgroundFrame,
     fps,
     enabled: enableBackgroundStreaming,
@@ -458,7 +460,34 @@ export const FluidCanvas = ({
 
       let pointer = pointersRef.current[0];
       if (!pointer.down) return;
-      updatePointerMoveData(pointer, posX, posY, canvas, generateCustomColor);
+      
+      // Check if audio reactivity is enabled and get current audio levels
+      const currentAudioReactive = isAudioReactive;
+      const currentAudioLevels = audioLevels;
+      
+      if (currentAudioReactive) {
+        // Enhance pointer movement based on audio levels
+        const audioIntensity = currentAudioLevels.overall;
+        const forceMultiplier = 1 + (audioIntensity * 2);
+        
+        // Debug log to verify audio reactivity is working
+        if (audioIntensity > 0.1) {
+          console.log(`🎵 Audio-reactive mouse move: intensity=${audioIntensity.toFixed(2)}, force=${forceMultiplier.toFixed(2)}x`);
+        }
+        
+        // Temporarily boost the splat force for audio-reactive mouse movement
+        const originalForce = configRef.current.SPLAT_FORCE;
+        configRef.current.SPLAT_FORCE = originalForce * forceMultiplier;
+        
+        updatePointerMoveData(pointer, posX, posY, canvas, generateCustomColor);
+        
+        // Restore original force after a short delay
+        setTimeout(() => {
+          configRef.current.SPLAT_FORCE = originalForce;
+        }, 50);
+      } else {
+        updatePointerMoveData(pointer, posX, posY, canvas, generateCustomColor);
+      }
     },
     [generateCustomColor, getEventPos]
   );
@@ -477,14 +506,48 @@ export const FluidCanvas = ({
       let posY = scaleByPixelRatio(pos.y);
 
       let pointer = pointersRef.current[0];
-      updatePointerDownData(
-        pointer,
-        -1,
-        posX,
-        posY,
-        canvas,
-        generateCustomColor
-      );
+      
+      // Check if audio reactivity is enabled and get current audio levels
+      const currentAudioReactive = isAudioReactive;
+      const currentAudioLevels = audioLevels;
+      
+      if (currentAudioReactive) {
+        // Enhance initial click based on audio levels
+        const audioIntensity = currentAudioLevels.overall;
+        const forceMultiplier = 1 + (audioIntensity * 3); // Stronger effect on click
+        
+        // Debug log to verify audio reactivity is working
+        if (audioIntensity > 0.1) {
+          console.log(`🎵 Audio-reactive mouse click: intensity=${audioIntensity.toFixed(2)}, force=${forceMultiplier.toFixed(2)}x`);
+        }
+        
+        // Temporarily boost the splat force for audio-reactive mouse down
+        const originalForce = configRef.current.SPLAT_FORCE;
+        configRef.current.SPLAT_FORCE = originalForce * forceMultiplier;
+        
+        updatePointerDownData(
+          pointer,
+          -1,
+          posX,
+          posY,
+          canvas,
+          generateCustomColor
+        );
+        
+        // Restore original force after a short delay
+        setTimeout(() => {
+          configRef.current.SPLAT_FORCE = originalForce;
+        }, 100);
+      } else {
+        updatePointerDownData(
+          pointer,
+          -1,
+          posX,
+          posY,
+          canvas,
+          generateCustomColor
+        );
+      }
     },
     [generateCustomColor, getEventPos]
   );
@@ -637,6 +700,38 @@ export const FluidCanvas = ({
       window.clearInterval(intervalId);
     };
   }, [randomSplatsIntervalMs, width, height]);
+
+  // Audio beat detection for reactive motion
+  useEffect(() => {
+    const handleAudioBeat = (event: CustomEvent) => {
+      // Ensure WebGL is ready
+      if (!glRef.current) return;
+      
+      const { intensity } = event.detail;
+      
+      // Generate more splats based on audio intensity
+      const splatCount = Math.max(1, Math.floor(intensity * 5));
+      const forceMultiplier = 1 + (intensity * 2); // Scale force based on intensity
+      
+      // Temporarily increase splat force for audio-reactive effects
+      const originalForce = configRef.current.SPLAT_FORCE;
+      configRef.current.SPLAT_FORCE = originalForce * forceMultiplier;
+      
+      // Generate splats
+      multipleSplats(splatCount, refs, width, height);
+      
+      // Restore original force after a short delay
+      setTimeout(() => {
+        configRef.current.SPLAT_FORCE = originalForce;
+      }, 100);
+    };
+
+    window.addEventListener('audioBeat', handleAudioBeat as EventListener);
+
+    return () => {
+      window.removeEventListener('audioBeat', handleAudioBeat as EventListener);
+    };
+  }, [width, height]);
 
   return (
     <canvas
