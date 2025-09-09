@@ -2,8 +2,8 @@ import type { ComplexityInjectionOptions, ComplexityMetrics } from '../types';
 
 class StreamComplexityManager {
   private static instance: StreamComplexityManager | null = null;
-  private analysisCanvas: HTMLCanvasElement | null = null;
-  private analysisCtx: CanvasRenderingContext2D | null = null;
+  // private analysisCanvas: HTMLCanvasElement | null = null;
+  // private analysisCtx: CanvasRenderingContext2D | null = null;
   private previousFrameData: ImageData | null = null;
   private complexityHistory: number[] = [];
   private maxHistorySize = 30;

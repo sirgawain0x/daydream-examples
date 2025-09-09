@@ -827,9 +827,6 @@ export function StreamRender({
     if (!currentStreamId) return null;
     
     try {
-      const rawKey = externalApiKey || apiKeyRef.current?.value || "";
-      const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
-      
       // Use Vercel function to check stream status
       const response = await fetch(`/api/stream-status?streamId=${currentStreamId}`);
       
@@ -857,7 +854,7 @@ export function StreamRender({
     
     try {
       const rawKey = externalApiKey || apiKeyRef.current?.value || "";
-      const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
+      const _apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
       
       // Check stream health first via Livepeer playback API
       const playbackHealth = await checkStreamHealth();
@@ -875,14 +872,14 @@ export function StreamRender({
       console.log("Payload structure:", JSON.stringify(payload, null, 2));
       console.log("Headers:", {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey.slice(0, 8)}...`
+        Authorization: `Bearer ${_apiKey.slice(0, 8)}...`
       });
       
       const response = await fetch(`${API_BASE_URL}/beta/streams/${currentStreamId}/prompts`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${_apiKey}`,
         },
         body: JSON.stringify(payload),
       });
@@ -1810,7 +1807,7 @@ export function StreamRender({
     }
   }, [externalApiKey]);
 
-  const monitorClipStatus = useCallback(async (assetId: string, apiKey: string) => {
+  const monitorClipStatus = useCallback(async (assetId: string, _apiKey: string) => {
     const maxAttempts = 30; // 5 minutes max
     let attempts = 0;
 

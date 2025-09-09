@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useRef } from "react";
 import { useCamera } from '../hooks/useCamera';
 import { useStreamManager } from '../hooks/useStreamManager';
 import type { CameraConstraints, BackgroundOptions } from '../types';
@@ -27,7 +27,7 @@ export const CameraInput: React.FC<CameraInputProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   
-  const { registerSource, orchestratedStream } = useStreamManager({
+  const { registerSource } = useStreamManager({
     backgroundOptions,
     onStreamReady,
   });

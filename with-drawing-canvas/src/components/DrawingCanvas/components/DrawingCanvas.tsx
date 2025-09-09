@@ -141,7 +141,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     ctx.fillRect(canvas.width - 1, canvas.height - 1, 1, 1);
   }, []);
 
-  const { isBackgroundStreaming } = useBackgroundStreaming({
+  const { } = useBackgroundStreaming({
     onBackgroundFrame: renderBackgroundFrame,
     fps,
     enabled: enableStreaming && enableBackgroundStreaming,
@@ -330,7 +330,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     try {
       await streamStabilizer.validateStreamStability(stream, {
         minStableFrames: 3,
-        timeoutMs: 2000,
+        _timeoutMs: 2000,
         validateAudio: false,
       });
     } catch (error) {

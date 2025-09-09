@@ -34,7 +34,6 @@ export const MultiInputPreview: React.FC<MultiInputPreviewProps> = ({
 
   const { 
     registerSource, 
-    orchestratedStream,
     isLoading: switchingMode,
     setIsLoading: setSwitchingMode
   } = useStreamManager({

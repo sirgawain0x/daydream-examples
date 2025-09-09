@@ -1,11 +1,7 @@
 {
   "functions": {
     "api/**/*.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "nodejs20.x"
     }
-  },
-  "env": {
-    "LIVEPEER_API_KEY": "@livepeer_api_key",
-    "DAYDREAM_API_KEY": "@daydream_api_key"
   }
 }

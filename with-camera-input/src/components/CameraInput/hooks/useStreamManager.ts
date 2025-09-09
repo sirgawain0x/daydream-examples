@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { StreamSource, BackgroundOptions } from '../types';
 import { streamOrchestrator } from '../utils/streamOrchestrator';
 
@@ -15,7 +15,7 @@ export const useStreamManager = ({
 }: UseStreamManagerOptions = {}) => {
   const [inputMode, setInputMode] = useState<InputMode>("none");
   const [isLoading, setIsLoading] = useState(false);
-  const currentStreamRef = useRef<MediaStream | null>(null);
+  // const currentStreamRef = useRef<MediaStream | null>(null);
 
   const registerSource = useCallback((source: StreamSource) => {
     streamOrchestrator.setSource(source);
