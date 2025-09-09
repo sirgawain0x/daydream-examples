@@ -140,6 +140,16 @@ export function StreamRender({
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
   const [promptStatus, setPromptStatus] = useState<string>("");
 
+  // Recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [isClipping, setIsClipping] = useState(false);
+  const [clipStatus, setClipStatus] = useState<string>("");
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingStartTimeRef = useRef<number>(0);
+  const recordingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const [params, setParams] = useState<StreamParams>({
     model_id: "streamdiffusion",
     pipeline: "live-video-to-video",
@@ -820,10 +830,8 @@ export function StreamRender({
       const rawKey = externalApiKey || apiKeyRef.current?.value || "";
       const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
       
-      // Use correct Daydream stream status endpoint
-      const response = await fetch(`https://api.daydream.live/v1/streams/${currentStreamId}/status`, {
-        headers: { "Authorization": `Bearer ${apiKey}` }
-      });
+      // Use Vercel function to check stream status
+      const response = await fetch(`/api/stream-status?streamId=${currentStreamId}`);
       
       if (response.ok) {
         const streamStatus = await response.json();
@@ -1366,8 +1374,16 @@ export function StreamRender({
       stopConnectionKeepalive();
       stopConnectionHealthMonitoring();
       stopStream();
+      
+      // Cleanup recording
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+      if (mediaRecorderRef.current && isRecording) {
+        mediaRecorderRef.current.stop();
+      }
     };
-  }, [stopStream, stopHealthMonitoring, stopConnectionKeepalive, stopConnectionHealthMonitoring]);
+  }, [stopStream, stopHealthMonitoring, stopConnectionKeepalive, stopConnectionHealthMonitoring, isRecording]);
 
   // --- Audio input helpers ---
   const stopAudioProcessing = useCallback(() => {
@@ -1538,6 +1554,303 @@ export function StreamRender({
     setIsRecognizing(false);
   }, []);
 
+  // Recording functionality
+  const startRecording = useCallback(async () => {
+    if (!playbackId || !isStreaming) {
+      setError("Cannot start recording: No active stream");
+      return;
+    }
+
+    try {
+      // Try to use screen capture API first (better quality)
+      let stream: MediaStream;
+      
+      try {
+        // Request screen capture permission
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+        
+        stream = screenStream;
+        setClipStatus("Screen recording started - select the AI output window");
+        
+        // Handle when user stops sharing screen
+        screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+          if (isRecording) {
+            stopRecording();
+          }
+        });
+        
+      } catch (screenError) {
+        console.log('Screen capture not available, falling back to canvas recording');
+        
+        // Fallback to canvas recording with placeholder content
+        const canvas = document.createElement('canvas');
+        canvas.width = 1280;
+        canvas.height = 720;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error("Canvas context not available");
+        }
+
+        stream = canvas.captureStream(30);
+        setClipStatus("Canvas recording started - recording placeholder content");
+        
+        // Draw placeholder content
+        const drawPlaceholder = () => {
+          if (!isRecording) return;
+          
+          // Clear canvas
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          
+          // Draw recording indicator
+          ctx.fillStyle = '#ff0000';
+          ctx.beginPath();
+          ctx.arc(50, 50, 15, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // Draw text
+          ctx.fillStyle = '#fff';
+          ctx.font = '24px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('AI Output Recording', canvas.width / 2, canvas.height / 2 - 40);
+          ctx.fillText('(Use screen recording for better quality)', canvas.width / 2, canvas.height / 2);
+          ctx.fillText(`Recording: ${Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)}s`, canvas.width / 2, canvas.height / 2 + 40);
+          ctx.fillText(`Playback ID: ${playbackId}`, canvas.width / 2, canvas.height / 2 + 80);
+          
+          // Draw timestamp
+          ctx.font = '16px Arial';
+          ctx.fillText(new Date().toLocaleTimeString(), canvas.width / 2, canvas.height - 20);
+          
+          if (isRecording) {
+            requestAnimationFrame(drawPlaceholder);
+          }
+        };
+        
+        drawPlaceholder();
+      }
+      
+      // Set up MediaRecorder
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9'
+      });
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ai-output-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        recordingChunksRef.current = [];
+        setRecordingDuration(0);
+        setClipStatus("Recording completed and downloaded!");
+      };
+
+      mediaRecorderRef.current = mediaRecorder;
+      recordingChunksRef.current = [];
+      recordingStartTimeRef.current = Date.now();
+      
+      // Start recording
+      mediaRecorder.start(1000); // Collect data every second
+      setIsRecording(true);
+
+      // Start duration timer
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingDuration(Math.floor((Date.now() - recordingStartTimeRef.current) / 1000));
+      }, 1000);
+
+    } catch (error) {
+      console.error('Recording start error:', error);
+      setError(`Failed to start recording: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }, [playbackId, isStreaming, isRecording]);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      setClipStatus("Recording stopped - processing...");
+      
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+        recordingIntervalRef.current = null;
+      }
+    }
+  }, [isRecording]);
+
+  const createClip = useCallback(async () => {
+    if (!playbackId || !isStreaming) {
+      setError("Cannot create clip: No active stream");
+      return;
+    }
+
+    setIsClipping(true);
+    setClipStatus("Creating clip...");
+
+    try {
+      // Try to get Livepeer API key from environment variable first, then from input
+      const envToken = import.meta.env.VITE_LIVEPEER_API_KEY as string | undefined;
+      const rawKey = externalApiKey || apiKeyRef.current?.value || "";
+      const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim() || envToken;
+      
+      if (!apiKey) {
+        throw new Error("Livepeer API key required for clipping. Set VITE_LIVEPEER_API_KEY in .env.local or enter it manually.");
+      }
+
+      // Get current time for clip (last 30 seconds)
+      const endTime = Date.now();
+      const startTime = endTime - 30000; // 30 seconds ago
+
+      console.log('Creating clip with:', {
+        startTime,
+        endTime,
+        playbackId,
+        apiKeyPrefix: apiKey.substring(0, 8) + '...'
+      });
+
+      // Use Vercel function to avoid CORS issues
+      const response = await fetch('/api/create-clip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          startTime,
+          endTime,
+          playbackId,
+          name: `AI Output Clip ${new Date().toISOString()}`
+        })
+      });
+
+      console.log('Clip API response:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries())
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        console.error('Clip creation error response:', errorText);
+        
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        
+        throw new Error(`Clip creation failed: ${errorMessage}`);
+      }
+
+      const clipData = await response.json();
+      console.log('Clip creation success:', clipData);
+      setClipStatus(`Clip created! Asset ID: ${clipData.asset?.id || 'Unknown'}`);
+      
+      // Monitor clip status
+      if (clipData.asset?.id) {
+        monitorClipStatus(clipData.asset.id, apiKey);
+      }
+
+    } catch (error) {
+      console.error('Clip creation error:', error);
+      setError(`Failed to create clip: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setClipStatus("Clip creation failed");
+    } finally {
+      setIsClipping(false);
+    }
+  }, [playbackId, isStreaming, externalApiKey]);
+
+  const testLivepeerAPI = useCallback(async () => {
+    try {
+      const envToken = import.meta.env.VITE_LIVEPEER_API_KEY as string | undefined;
+      const rawKey = externalApiKey || apiKeyRef.current?.value || "";
+      const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim() || envToken;
+      
+      if (!apiKey) {
+        setError("No Livepeer API key found. Set VITE_LIVEPEER_API_KEY in .env.local or enter manually.");
+        return;
+      }
+
+      setClipStatus("Testing Livepeer API connection...");
+      
+      // Use Vercel function to test API connection
+      const response = await fetch('/api/test-api');
+
+      console.log('Livepeer API test response:', {
+        status: response.status,
+        statusText: response.statusText
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setClipStatus(`✅ Livepeer API key is valid! Found ${data.length || 0} assets.`);
+      } else {
+        const errorText = await response.text().catch(() => '');
+        setError(`Livepeer API test failed: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+    } catch (error) {
+      console.error('Livepeer API test error:', error);
+      setError(`Livepeer API test error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }, [externalApiKey]);
+
+  const monitorClipStatus = useCallback(async (assetId: string, apiKey: string) => {
+    const maxAttempts = 30; // 5 minutes max
+    let attempts = 0;
+
+    const checkStatus = async () => {
+      try {
+        // Use Vercel function to check asset status
+        const response = await fetch(`/api/asset-status?assetId=${assetId}`);
+
+        if (response.ok) {
+          const assetData = await response.json();
+          const status = assetData.status?.phase;
+
+          if (status === 'ready') {
+            setClipStatus(`Clip ready! Playback ID: ${assetData.playbackId}`);
+            // You could automatically download or provide a link here
+            return;
+          } else if (status === 'failed') {
+            setClipStatus("Clip processing failed");
+            return;
+          }
+        }
+
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(checkStatus, 10000); // Check every 10 seconds
+        } else {
+          setClipStatus("Clip status check timeout");
+        }
+      } catch (error) {
+        console.error('Clip status check error:', error);
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(checkStatus, 10000);
+        }
+      }
+    };
+
+    checkStatus();
+  }, []);
+
   // Daydream prompt submission
   const handleSubmitPrompt = useCallback(async () => {
     setPromptStatus("");
@@ -1560,75 +1873,77 @@ export function StreamRender({
     setIsSubmittingPrompt(true);
     setPromptStatus("Submitting...");
     try {
-      const response = await fetch(`https://api.daydream.live/beta/streams/${currentStreamId}/prompts`, {
+      const response = await fetch('/api/update-stream-prompts', {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model_id: "streamdiffusion",
-          pipeline: "live-video-to-video",
-          params: {
-            model_id: "stabilityai/sd-turbo",
-            prompt: daydreamPrompt || params.params.prompt,
-            prompt_interpolation_method: "slerp",
-            normalize_prompt_weights: true,
-            normalize_seed_weights: true,
-            negative_prompt: "blurry, low quality, flat, 2d",
-            num_inference_steps: 50,
-            seed: 42,
-            t_index_list: [0, 8, 17],
-            controlnets: [
-              {
-                conditioning_scale: 0,
-                control_guidance_end: 1,
-                control_guidance_start: 0,
-                enabled: true,
-                model_id: "thibaud/controlnet-sd21-openpose-diffusers",
-                preprocessor: "pose_tensorrt",
-                preprocessor_params: {}
-              },
-              {
-                conditioning_scale: 0,
-                control_guidance_end: 1,
-                control_guidance_start: 0,
-                enabled: true,
-                model_id: "thibaud/controlnet-sd21-hed-diffusers",
-                preprocessor: "soft_edge",
-                preprocessor_params: {}
-              },
-              {
-                conditioning_scale: 0,
-                control_guidance_end: 1,
-                control_guidance_start: 0,
-                enabled: true,
-                model_id: "thibaud/controlnet-sd21-canny-diffusers",
-                preprocessor: "canny",
-                preprocessor_params: {
-                  high_threshold: 200,
-                  low_threshold: 100
+          streamId: currentStreamId,
+          prompts: {
+            model_id: "streamdiffusion",
+            pipeline: "live-video-to-video",
+            params: {
+              model_id: "stabilityai/sd-turbo",
+              prompt: daydreamPrompt || params.params.prompt,
+              prompt_interpolation_method: "slerp",
+              normalize_prompt_weights: true,
+              normalize_seed_weights: true,
+              negative_prompt: "blurry, low quality, flat, 2d",
+              num_inference_steps: 50,
+              seed: 42,
+              t_index_list: [0, 8, 17],
+              controlnets: [
+                {
+                  conditioning_scale: 0,
+                  control_guidance_end: 1,
+                  control_guidance_start: 0,
+                  enabled: true,
+                  model_id: "thibaud/controlnet-sd21-openpose-diffusers",
+                  preprocessor: "pose_tensorrt",
+                  preprocessor_params: {}
+                },
+                {
+                  conditioning_scale: 0,
+                  control_guidance_end: 1,
+                  control_guidance_start: 0,
+                  enabled: true,
+                  model_id: "thibaud/controlnet-sd21-hed-diffusers",
+                  preprocessor: "soft_edge",
+                  preprocessor_params: {}
+                },
+                {
+                  conditioning_scale: 0,
+                  control_guidance_end: 1,
+                  control_guidance_start: 0,
+                  enabled: true,
+                  model_id: "thibaud/controlnet-sd21-canny-diffusers",
+                  preprocessor: "canny",
+                  preprocessor_params: {
+                    high_threshold: 200,
+                    low_threshold: 100
+                  }
+                },
+                {
+                  conditioning_scale: 0,
+                  control_guidance_end: 1,
+                  control_guidance_start: 0,
+                  enabled: true,
+                  model_id: "thibaud/controlnet-sd21-depth-diffusers",
+                  preprocessor: "depth_tensorrt",
+                  preprocessor_params: {}
+                },
+                {
+                  conditioning_scale: 0,
+                  control_guidance_end: 1,
+                  control_guidance_start: 0,
+                  enabled: true,
+                  model_id: "thibaud/controlnet-sd21-color-diffusers",
+                  preprocessor: "passthrough",
+                  preprocessor_params: {}
                 }
-              },
-              {
-                conditioning_scale: 0,
-                control_guidance_end: 1,
-                control_guidance_start: 0,
-                enabled: true,
-                model_id: "thibaud/controlnet-sd21-depth-diffusers",
-                preprocessor: "depth_tensorrt",
-                preprocessor_params: {}
-              },
-              {
-                conditioning_scale: 0,
-                control_guidance_end: 1,
-                control_guidance_start: 0,
-                enabled: true,
-                model_id: "thibaud/controlnet-sd21-color-diffusers",
-                preprocessor: "passthrough",
-                preprocessor_params: {}
-              }
-            ]
+              ]
+            }
           }
         }),
       });
@@ -1709,11 +2024,11 @@ export function StreamRender({
             <div className="space-y-2">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">API Key</label>
-                <input ref={apiKeyRef} type="password" placeholder="REPLACE WITH YOUR API KEY" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+                <input ref={apiKeyRef} type="password" placeholder="REPLACE WITH YOUR API KEY" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm cursor-pointer" />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Pipeline ID</label>
-                <input ref={pipelineIdRef} type="text" defaultValue="pip_qpUgXycjWF6YMeSL" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+                <input ref={pipelineIdRef} type="text" defaultValue="pip_qpUgXycjWF6YMeSL" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm cursor-pointer" />
               </div>
             </div>
           </div>
@@ -1722,7 +2037,7 @@ export function StreamRender({
           <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
             <h4 className="text-sm font-semibold">Stream Controls</h4>
             <div className="grid grid-cols-1 gap-2">
-              <button onClick={() => (isStreaming ? stopStream() : startStream())} className={`w-full py-2 px-4 rounded-lg font-medium transition-colors bg-gradient-to-r ${isStreaming ? "from-rose-600 to-red-700 hover:from-rose-600/90 hover:to-red-700/90" : "from-indigo-600 to-violet-700 hover:from-indigo-600/90 hover:to-violet-700/90"}`}>{isStreaming ? "Stop" : "Start"}</button>
+              <button onClick={() => (isStreaming ? stopStream() : startStream())} className={`w-full py-2 px-4 rounded-lg font-medium transition-colors cursor-pointer bg-gradient-to-r ${isStreaming ? "from-rose-600 to-red-700 hover:from-rose-600/90 hover:to-red-700/90" : "from-indigo-600 to-violet-700 hover:from-indigo-600/90 hover:to-violet-700/90"}`}>{isStreaming ? "Stop" : "Start"}</button>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Status</label>
                 <div className="text-xs">
@@ -1761,7 +2076,7 @@ export function StreamRender({
                 id="debugMode"
                 checked={debugMode}
                 onChange={(e) => setDebugMode(e.target.checked)}
-                className="rounded"
+                className="rounded cursor-pointer"
               />
               <label htmlFor="debugMode" className="text-xs font-medium text-gray-300">
                 🐛 Debug Mode
@@ -1771,14 +2086,14 @@ export function StreamRender({
             <div className="grid grid-cols-2 gap-2 mb-3">
               <button
                 onClick={testWebRTCConnectivity}
-                className="px-3 py-2 rounded bg-orange-600 hover:bg-orange-700 text-white font-medium text-xs transition-colors"
+                className="px-3 py-2 rounded bg-orange-600 hover:bg-orange-700 text-white font-medium text-xs transition-colors cursor-pointer"
               >
                 🧪 Test WebRTC
               </button>
               <button
                 onClick={() => streamId && fetchStreamStatus(streamId)}
                 disabled={!streamId}
-                className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium text-xs transition-colors"
+                className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium text-xs transition-colors cursor-pointer"
               >
                 📊 Refresh Metrics
               </button>
@@ -1863,7 +2178,7 @@ export function StreamRender({
                     value={customTurnServer}
                     onChange={(e) => setCustomTurnServer(e.target.value)}
                     placeholder="turn:server.com:3478"
-                    className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                    className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs cursor-pointer"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -1874,7 +2189,7 @@ export function StreamRender({
                       value={turnUsername}
                       onChange={(e) => setTurnUsername(e.target.value)}
                       placeholder="username"
-                      className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                      className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs cursor-pointer"
                     />
                   </div>
                   <div>
@@ -1884,7 +2199,7 @@ export function StreamRender({
                       value={turnPassword}
                       onChange={(e) => setTurnPassword(e.target.value)}
                       placeholder="password"
-                      className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs"
+                      className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs cursor-pointer"
                     />
                   </div>
                 </div>
@@ -1931,9 +2246,9 @@ export function StreamRender({
               )}
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => (isMicActive ? stopMicrophone() : startMicrophone())} className={`w-full py-2 px-3 rounded-lg text-sm font-medium ${isMicActive ? "bg-rose-600 hover:bg-rose-700" : "bg-gray-800 hover:bg-gray-700"}`}>{isMicActive ? "Stop Microphone" : "Use Microphone"}</button>
+              <button onClick={() => (isMicActive ? stopMicrophone() : startMicrophone())} className={`w-full py-2 px-3 rounded-lg text-sm font-medium cursor-pointer ${isMicActive ? "bg-rose-600 hover:bg-rose-700" : "bg-gray-800 hover:bg-gray-700"}`}>{isMicActive ? "Stop Microphone" : "Use Microphone"}</button>
               {isDemoPlaying ? (
-                <button onClick={stopDemoAudio} className="w-full py-2 px-3 rounded-lg text-sm font-medium bg-rose-600 hover:bg-rose-700">Stop Audio</button>
+                <button onClick={stopDemoAudio} className="w-full py-2 px-3 rounded-lg text-sm font-medium cursor-pointer bg-rose-600 hover:bg-rose-700">Stop Audio</button>
               ) : (
                 <label className="w-full">
                   <span className="block w-full py-2 px-3 rounded-lg text-sm font-medium text-center cursor-pointer bg-gray-800 hover:bg-gray-700">Upload Audio</span>
@@ -1942,8 +2257,80 @@ export function StreamRender({
               )}
             </div>
             <label className="block text-xs text-gray-400 mb-1">Audio Reactivity: {audioReactivity.toFixed(2)}</label>
-            <input type="range" min={0} max={1.5} step={0.01} value={audioReactivity} onChange={(e) => setAudioReactivity(Number(e.target.value))} className="w-full" />
+            <input type="range" min={0} max={1.5} step={0.01} value={audioReactivity} onChange={(e) => setAudioReactivity(Number(e.target.value))} className="w-full cursor-pointer" />
             <p className="text-[11px] text-gray-500">How much audio affects the AI rendering</p>
+          </div>
+
+          {/* Recording & Clipping Controls */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold">Recording & Clipping</h4>
+            
+            {/* Local Recording Controls */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-400">Local Recording</span>
+                {isRecording && (
+                  <span className="text-xs text-red-400 flex items-center gap-1">
+                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                    {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
+                  </span>
+                )}
+              </div>
+               <div className="grid grid-cols-2 gap-2">
+                 <button
+                   onClick={isRecording ? stopRecording : startRecording}
+                   disabled={!isRecording && (!isStreaming || !playbackId)}
+                   className={`w-full py-2 px-3 rounded text-sm font-medium transition-colors cursor-pointer ${
+                     isRecording 
+                       ? "bg-red-600 hover:bg-red-700" 
+                       : "bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                   }`}
+                 >
+                   {isRecording ? "⏹ Stop Recording" : "⏺ Start Recording"}
+                 </button>
+                 <button
+                   onClick={createClip}
+                   disabled={!isStreaming || !playbackId || isClipping}
+                   className="w-full py-2 px-3 rounded text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                 >
+                   {isClipping ? "Creating..." : "📹 Create Clip"}
+                 </button>
+               </div>
+               <div className="grid grid-cols-1 gap-2">
+                 <button
+                   onClick={testLivepeerAPI}
+                   className="w-full py-2 px-3 rounded text-sm font-medium bg-purple-600 hover:bg-purple-700 transition-colors cursor-pointer"
+                 >
+                   🧪 Test Livepeer API
+                 </button>
+               </div>
+               <p className="text-[11px] text-gray-500">
+                 Recording uses screen capture for best quality. Clipping creates a server-side clip of the last 30 seconds.
+               </p>
+               {import.meta.env.VITE_LIVEPEER_API_KEY && (
+                 <p className="text-[11px] text-green-400">
+                   ✅ Livepeer API key loaded from environment
+                 </p>
+               )}
+            </div>
+
+            {/* Status Display */}
+            {(clipStatus || isRecording) && (
+              <div className="p-2 rounded bg-gray-800/50 border border-gray-700">
+                <div className="text-xs text-gray-400 mb-1">Status</div>
+                <div className="text-xs text-gray-200">
+                  {isRecording && (
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                      Recording in progress...
+                    </div>
+                  )}
+                  {clipStatus && (
+                    <div className="text-gray-300">{clipStatus}</div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Advanced Parameters */}
@@ -1952,15 +2339,15 @@ export function StreamRender({
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Steps: {params.params.num_inference_steps}</label>
-                <input type="range" min={1} max={100} step={1} value={params.params.num_inference_steps} onChange={(e) => handleParamChange("num_inference_steps", Number(e.target.value))} className="w-full" />
+                <input type="range" min={1} max={100} step={1} value={params.params.num_inference_steps} onChange={(e) => handleParamChange("num_inference_steps", Number(e.target.value))} className="w-full cursor-pointer" />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Seed</label>
-                <input type="number" value={params.params.seed} onChange={(e) => handleParamChange("seed", Number(e.target.value))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+                <input type="number" value={params.params.seed} onChange={(e) => handleParamChange("seed", Number(e.target.value))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm cursor-pointer" />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">t_index_list</label>
-                <input type="text" value={params.params.t_index_list.join(",")} onChange={(e) => handleParamChange("t_index_list", e.target.value.split(",").map((v) => Number(v.trim())).filter((v) => Number.isFinite(v)))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+                <input type="text" value={params.params.t_index_list.join(",")} onChange={(e) => handleParamChange("t_index_list", e.target.value.split(",").map((v) => Number(v.trim())).filter((v) => Number.isFinite(v)))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm cursor-pointer" />
               </div>
             </div>
 
@@ -2031,12 +2418,11 @@ export function StreamRender({
                     <label>{label}</label>
                     <span className="text-[11px] text-gray-500">{params.params.controlnets[i]?.conditioning_scale.toFixed(2)}</span>
                   </div>
-                  <input type="range" min={0} max={1} step={0.01} value={params.params.controlnets[i]?.conditioning_scale || 0} onChange={(e) => handleControlNetChange(i, Number(e.target.value))} className="w-full" />
+                  <input type="range" min={0} max={1} step={0.01} value={params.params.controlnets[i]?.conditioning_scale || 0} onChange={(e) => handleControlNetChange(i, Number(e.target.value))} className="w-full cursor-pointer" />
                 </div>
               ))}
             </div>
           </div>
-
 
           {/* Fluid Controls Section */}
           <FluidControls 
@@ -2054,7 +2440,7 @@ export function StreamRender({
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-semibold">Speech Recognition & Text Layers</h4>
               <div className="flex gap-2">
-                <button onClick={() => (isRecognizing ? stopRecognition() : startRecognition())} className={`py-1.5 px-3 rounded text-xs font-medium ${isRecognizing ? "bg-rose-600 hover:bg-rose-700" : "bg-gray-800 hover:bg-gray-700"}`}>{isRecognizing ? "Stop" : "Start Recognition"}</button>
+                <button onClick={() => (isRecognizing ? stopRecognition() : startRecognition())} className={`py-1.5 px-3 rounded text-xs font-medium cursor-pointer ${isRecognizing ? "bg-rose-600 hover:bg-rose-700" : "bg-gray-800 hover:bg-gray-700"}`}>{isRecognizing ? "Stop" : "Start Recognition"}</button>
               </div>
             </div>
 
@@ -2068,7 +2454,7 @@ export function StreamRender({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Recognition Language</label>
-                <select value={recognitionLang} onChange={(e) => setRecognitionLang(e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs">
+                <select value={recognitionLang} onChange={(e) => setRecognitionLang(e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs cursor-pointer">
                   <option value="en-US">English (US)</option>
                   <option value="en-GB">English (UK)</option>
                   <option value="es-ES">Spanish (ES)</option>
@@ -2080,7 +2466,7 @@ export function StreamRender({
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Font Family</label>
-                <select value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs">
+                <select value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-xs cursor-pointer">
                   <option value="Arial, Helvetica, sans-serif">Arial</option>
                   <option value="Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, Noto Color Emoji">Inter</option>
                   <option value="Times New Roman, Times, serif">Times New Roman</option>
@@ -2092,20 +2478,20 @@ export function StreamRender({
             <div className="grid grid-cols-2 gap-3 items-center">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Font Size: {fontSize}px</label>
-                <input type="range" min={10} max={72} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full" />
+                <input type="range" min={10} max={72} value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full cursor-pointer" />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Text Opacity: {(textOpacity * 100).toFixed(0)}%</label>
-                <input type="range" min={0} max={1} step={0.01} value={textOpacity} onChange={(e) => setTextOpacity(Number(e.target.value))} className="w-full" />
+                <input type="range" min={0} max={1} step={0.01} value={textOpacity} onChange={(e) => setTextOpacity(Number(e.target.value))} className="w-full cursor-pointer" />
               </div>
             </div>
             <label className="inline-flex items-center gap-2 text-xs text-gray-300">
-              <input type="checkbox" className="accent-indigo-500" checked={showOverlay} onChange={(e) => setShowOverlay(e.target.checked)} />
+              <input type="checkbox" className="accent-indigo-500 cursor-pointer" checked={showOverlay} onChange={(e) => setShowOverlay(e.target.checked)} />
               Show overlay on output
             </label>
             <div className="grid grid-cols-2 gap-3 items-center">
-              <button onClick={() => setRecognizedText("")} className="py-1.5 px-3 rounded text-xs font-medium bg-gray-800 hover:bg-gray-700">Clear</button>
-              <button onClick={() => navigator.clipboard.writeText(recognizedText || "").catch(() => {})} className="py-1.5 px-3 rounded text-xs font-medium bg-gray-800 hover:bg-gray-700">Copy</button>
+              <button onClick={() => setRecognizedText("")} className="py-1.5 px-3 rounded text-xs font-medium cursor-pointer bg-gray-800 hover:bg-gray-700">Clear</button>
+              <button onClick={() => navigator.clipboard.writeText(recognizedText || "").catch(() => {})} className="py-1.5 px-3 rounded text-xs font-medium cursor-pointer bg-gray-800 hover:bg-gray-700">Copy</button>
             </div>
           </div>
         </div>

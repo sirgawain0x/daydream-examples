@@ -12,7 +12,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref,
   ) => {
     const baseStyles =
-      "font-medium rounded transition-colors focus:outline-none focus:ring-2";
+      "font-medium rounded transition-colors focus:outline-none focus:ring-2 cursor-pointer";
 
     const variants: Record<NonNullable<ButtonProps["variant"]>, string> = {
       default: "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500",
