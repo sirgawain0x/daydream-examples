@@ -22,10 +22,31 @@ type StreamParams = {
     normalize_prompt_weights: boolean;
     normalize_seed_weights: boolean;
     negative_prompt: string;
+    guidance_scale?: number;
+    delta?: number;
     num_inference_steps: number;
-    seed: number;
     t_index_list: number[];
+    use_safety_checker?: boolean;
+    width?: number;
+    height?: number;
+    lora_dict?: Record<string, unknown>;
+    use_lcm_lora?: boolean;
+    lcm_lora_id?: string;
+    acceleration?: string;
+    use_denoising_batch?: boolean;
+    do_add_noise?: boolean;
+    seed: number;
+    seed_interpolation_method?: string;
+    enable_similar_image_filter?: boolean;
+    similar_image_filter_threshold?: number;
+    similar_image_filter_max_skip_frame?: number;
     controlnets: ControlNet[];
+    ip_adapter?: {
+      scale: number;
+      enabled: boolean;
+    };
+    ip_adapter_style_image_url?: string;
+    weight_type?: string;
   };
 };
 
@@ -73,7 +94,6 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
 
   // Health monitoring
   const healthMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [lastHealthCheck, setLastHealthCheck] = useState<Date | null>(null);
   
   // Connection keepalive
   const keepaliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -94,9 +114,24 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       normalize_prompt_weights: true,
       normalize_seed_weights: true,
       negative_prompt: "blurry, low quality, flat, 2d",
+      guidance_scale: 7.5,
+      delta: 1.0,
       num_inference_steps: 50,
-      seed: 42,
       t_index_list: [0, 8, 17],
+      use_safety_checker: true,
+      width: 512,
+      height: 512,
+      lora_dict: {},
+      use_lcm_lora: true,
+      lcm_lora_id: "latent-consistency/lcm-lora-sdv1-5",
+      acceleration: "none",
+      use_denoising_batch: true,
+      do_add_noise: true,
+      seed: 42,
+      seed_interpolation_method: "linear",
+      enable_similar_image_filter: true,
+      similar_image_filter_threshold: 0.98,
+      similar_image_filter_max_skip_frame: 10,
       controlnets: [
         { name: "Pose Estimation", preprocessor: "pose_tensorrt", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-openpose-diffusers" },
         { name: "Soft Edges (HED)", preprocessor: "soft_edge", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-hed-diffusers" },
@@ -104,6 +139,12 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
         { name: "Depth Estimation", preprocessor: "depth_tensorrt", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-depth-diffusers" },
         { name: "Color Preservation", preprocessor: "passthrough", conditioning_scale: 0, model_id: "thibaud/controlnet-sd21-color-diffusers" },
       ].map((cn) => ({ ...cn, control_guidance_end: 1, control_guidance_start: 0, enabled: true, preprocessor_params: {} })),
+      ip_adapter: {
+        scale: 1.0,
+        enabled: false
+      },
+      ip_adapter_style_image_url: "",
+      weight_type: "linear"
     },
   });
 
@@ -226,10 +267,10 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       
       switch (rtcPeerConnection.connectionState) {
         case "connecting":
-          setStatusWithLoading("Establishing WebRTC connection...");
+          setStatusWithLoading("Establishing connection...");
           break;
         case "connected":
-          setStatusWithLoading("WebRTC connected! Initializing AI pipeline...");
+          setStatusWithLoading("Initializing...");
           setPipelineInitializing(true);
           // Start keepalive monitoring when connected
           startConnectionKeepalive();
@@ -560,10 +601,17 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
         setStatusWithLoading("Warning: Stream offline - parameters may not apply");
       }
       
+      // Create a clean copy of params and remove UI-only fields
       const payload: StreamParams = JSON.parse(JSON.stringify(params));
       payload.params.controlnets.forEach((cn) => delete cn.name);
       
-      console.log("Sending parameters to AI pipeline:", payload);
+      console.log("Sending parameters to AI pipeline:");
+      console.log("API Endpoint:", `${API_BASE_URL}/beta/streams/${streamId}/prompts`);
+      console.log("Payload structure:", JSON.stringify(payload, null, 2));
+      console.log("Headers:", {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey.slice(0, 8)}...`
+      });
       
       const response = await fetch(`${API_BASE_URL}/beta/streams/${streamId}/prompts`, {
         method: "POST",
@@ -574,9 +622,14 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
         body: JSON.stringify(payload),
       });
       
+      console.log("API Response status:", response.status);
+      console.log("API Response headers:", Object.fromEntries(response.headers.entries()));
+      
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
         let errorMessage = `HTTP ${response.status}`;
+        
+        console.error("API Error response body:", errorText);
         
         try {
           const errorJson = JSON.parse(errorText);
@@ -588,7 +641,8 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
         throw new Error(`API Error: ${errorMessage}`);
       }
       
-      console.log("AI parameters updated successfully");
+      const responseData = await response.json().catch(() => null);
+      console.log("AI parameters updated successfully:", responseData);
       setStatusWithLoading("AI parameters updated - processing...");
       
       // Give some time for the parameters to take effect
@@ -747,41 +801,28 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       setPipelineInitializing(true);
       setStatusWithLoading("Initializing AI pipeline (30-60 seconds)...");
       
-      // Enhanced AI pipeline initialization with extended timeout for slow initialization
-      const initializePipeline = async (retries = 25, delay = 5000) => {
-        console.log(`Initializing AI pipeline (attempt ${26 - retries}/25)`);
-        setStatusWithLoading(`Initializing AI pipeline... (${26 - retries}/25)`);
+      // Enhanced AI pipeline initialization with fallback approach
+      const initializePipeline = async (retries = 10, delay = 3000) => {
+        console.log(`Initializing AI pipeline (attempt ${11 - retries}/10)`);
+        setStatusWithLoading(`Initializing AI pipeline... (${11 - retries}/10)`);
         
         try {
-          // Check Daydream stream status using correct API endpoint
-          const streamStatus = await checkStreamHealth();
-          
-          if (!streamStatus) {
-            if (retries > 0) {
-              console.log(`Stream status not available, retrying in ${delay/1000}s... (${retries} retries left)`);
-              setTimeout(() => initializePipeline(retries - 1, delay), delay);
-              return;
+          // Check stream status but don't block on it
+          let streamReady = false;
+          try {
+            const streamStatus = await checkStreamHealth();
+            if (streamStatus) {
+              streamReady = streamStatus.status === 'active' || streamStatus.state === 'ready' || streamStatus.pipeline_status === 'active';
+              console.log("Stream status check result:", streamStatus.status || streamStatus.state || 'unknown', "- Ready:", streamReady);
             } else {
-              throw new Error("Stream status failed to become available within timeout period");
+              console.log("Stream status not available, proceeding anyway");
             }
+          } catch (statusError) {
+            console.log("Stream status check failed, proceeding anyway:", statusError);
           }
           
-          // Check if stream is active/ready for AI processing
-          const isStreamReady = streamStatus.status === 'active' || streamStatus.state === 'ready' || streamStatus.pipeline_status === 'active';
-          
-          if (!isStreamReady) {
-            if (retries > 0) {
-              console.log(`Stream not ready (status: ${streamStatus.status || streamStatus.state || 'unknown'}), retrying in ${delay/1000}s... (${retries} retries left)`);
-              setTimeout(() => initializePipeline(retries - 1, delay), delay);
-              return;
-            } else {
-              throw new Error(`Stream failed to become ready within timeout period (final status: ${streamStatus.status || streamStatus.state || 'unknown'})`);
-            }
-          }
-          
-          console.log("Daydream stream is ready:", streamStatus.status || streamStatus.state);
-          
-          // Stream is ready, now send parameters
+          // Always try to send parameters regardless of status check
+          console.log("Sending AI pipeline parameters...");
           await updateApiParams();
           console.log("AI pipeline parameters sent successfully");
           setStatusWithLoading("AI pipeline connected! Processing...");
@@ -799,10 +840,17 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
         } catch (e: any) {
           console.error("Pipeline initialization error:", e);
           
-          if (retries > 0 && (e.message?.includes("not ready") || e.message?.includes("404") || e.message?.includes("503"))) {
-            console.log(`Pipeline not ready, retrying in ${delay/1000}s... (${retries} retries left)`);
-            setTimeout(() => initializePipeline(retries - 1, Math.min(delay + 1000, 10000)), delay);
+          // Retry for certain error types
+          const retryableErrors = ['not ready', '404', '503', 'timeout', 'network'];
+          const shouldRetry = retries > 0 && retryableErrors.some(errorType => 
+            e.message?.toLowerCase().includes(errorType)
+          );
+          
+          if (shouldRetry) {
+            console.log(`Pipeline error (${e.message}), retrying in ${delay/1000}s... (${retries} retries left)`);
+            setTimeout(() => initializePipeline(retries - 1, Math.min(delay + 1000, 8000)), delay);
           } else {
+            console.error("Pipeline initialization failed after all retries:", e.message);
             setError(`AI pipeline initialization failed: ${e.message}`);
             setStatusWithLoading("AI pipeline failed to initialize");
             setPipelineInitializing(false);
@@ -830,7 +878,6 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       
       try {
         const streamStatus = await checkStreamHealth();
-        setLastHealthCheck(new Date());
         
         if (streamStatus) {
           const isActive = streamStatus.status === 'active' || streamStatus.state === 'ready' || streamStatus.pipeline_status === 'active';
@@ -919,7 +966,6 @@ export function StreamRender({ onStreamIdChange }: { onStreamIdChange?: (id: str
       setStreamId(null);
       setWhipUrl(null);
       setPlaybackId(null);
-      setLastHealthCheck(null);
       mountPlayerIframe(null);
       setStatusWithLoading("");
       try { onStreamIdChange?.(null); } catch {}
