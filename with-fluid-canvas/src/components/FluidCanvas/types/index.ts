@@ -69,6 +69,17 @@ export interface FluidCanvasProps {
    * When > 0, emits random splats at this interval (ms)
    */
   randomSplatsIntervalMs?: number;
+
+  /**
+   * Audio reactivity settings
+   */
+  isAudioReactive?: boolean;
+  audioLevels?: {
+    low: number;
+    mid: number;
+    high: number;
+    overall: number;
+  };
 }
 
 export interface FluidConfig {
