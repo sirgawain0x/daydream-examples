@@ -72,6 +72,13 @@ export function StreamRender({
   const [streamId, setStreamId] = useState<string | null>(null);
   const [whipUrl, setWhipUrl] = useState<string | null>(null);
   const [playbackId, setPlaybackId] = useState<string | null>(null);
+  const [connectionQuality, setConnectionQuality] = useState<'excellent' | 'good' | 'poor' | 'failed'>('excellent');
+  const [streamMetrics, setStreamMetrics] = useState<{
+    video: { jitter: number; packets_lost: number; packets_received: number; packet_loss_pct: number; rtt: number };
+    audio: { jitter: number; packets_lost: number; packets_received: number; packet_loss_pct: number; rtt: number };
+    bytesReceived: number;
+    bytesSent: number;
+  } | null>(null);
   const [pipelineInitializing, setPipelineInitializing] = useState(false);
 
   const apiKeyRef = useRef<HTMLInputElement | null>(null);
@@ -83,6 +90,17 @@ export function StreamRender({
   const localStreamRef = useRef<MediaStream | null>(null);
   const rtcPeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectionHealthRef = useRef<{
+    lastConnected: number;
+    connectionAttempts: number;
+    consecutiveFailures: number;
+    healthCheckInterval: ReturnType<typeof setInterval> | null;
+  }>({
+    lastConnected: 0,
+    connectionAttempts: 0,
+    consecutiveFailures: 0,
+    healthCheckInterval: null
+  });
 
   // Audio input + analysis state (lightweight, no extra deps)
   const [isMicActive, setIsMicActive] = useState(false);
@@ -171,6 +189,185 @@ export function StreamRender({
     setError(null);
   }, []);
 
+  const startConnectionHealthMonitoring = useCallback(() => {
+    // Clear any existing health check
+    if (connectionHealthRef.current.healthCheckInterval) {
+      clearInterval(connectionHealthRef.current.healthCheckInterval);
+    }
+
+    connectionHealthRef.current.healthCheckInterval = setInterval(async () => {
+      const pc = rtcPeerConnectionRef.current;
+      if (!pc) return;
+
+      const now = Date.now();
+      const timeSinceLastConnected = now - connectionHealthRef.current.lastConnected;
+      
+      // Fetch stream metrics if we have a stream ID
+      if (streamId) {
+        try {
+          const response = await fetch(`https://daydream.live/api/streams/${streamId}/status`, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.data?.gateway_status?.ingest_metrics?.stats) {
+              const stats = data.data.gateway_status.ingest_metrics.stats;
+              const videoTrack = stats.track_stats?.find((track: any) => track.type === 'video');
+              const audioTrack = stats.track_stats?.find((track: any) => track.type === 'audio');
+              
+              if (videoTrack && audioTrack) {
+                setStreamMetrics({
+                  video: {
+                    jitter: videoTrack.jitter || 0,
+                    packets_lost: videoTrack.packets_lost || 0,
+                    packets_received: videoTrack.packets_received || 0,
+                    packet_loss_pct: videoTrack.packet_loss_pct || 0,
+                    rtt: videoTrack.rtt || 0
+                  },
+                  audio: {
+                    jitter: audioTrack.jitter || 0,
+                    packets_lost: audioTrack.packets_lost || 0,
+                    packets_received: audioTrack.packets_received || 0,
+                    packet_loss_pct: audioTrack.packet_loss_pct || 0,
+                    rtt: audioTrack.rtt || 0
+                  },
+                  bytesReceived: stats.peer_conn_stats?.BytesReceived || 0,
+                  bytesSent: stats.peer_conn_stats?.BytesSent || 0
+                });
+                
+                if (debugMode) {
+                  console.log('📊 Stream metrics updated:', {
+                    video: videoTrack,
+                    audio: audioTrack,
+                    bytes: { received: stats.peer_conn_stats?.BytesReceived, sent: stats.peer_conn_stats?.BytesSent }
+                  });
+                }
+              }
+            }
+          } else {
+            if (debugMode) console.warn('Failed to fetch stream status:', response.status);
+          }
+        } catch (error) {
+          if (debugMode) console.warn('Error fetching stream status:', error);
+        }
+      }
+      
+      // Update connection quality based on current state, history, and metrics
+      if (pc.connectionState === "connected") {
+        let quality: 'excellent' | 'good' | 'poor' | 'failed' = 'excellent';
+        
+        // Check stream metrics if available
+        if (streamMetrics) {
+          const videoLoss = streamMetrics.video.packet_loss_pct;
+          const audioLoss = streamMetrics.audio.packet_loss_pct;
+          const videoJitter = streamMetrics.video.jitter;
+          const audioJitter = streamMetrics.audio.jitter;
+          
+          // Determine quality based on packet loss and jitter
+          if (videoLoss > 5 || audioLoss > 5 || videoJitter > 50 || audioJitter > 100) {
+            quality = 'failed';
+          } else if (videoLoss > 2 || audioLoss > 2 || videoJitter > 20 || audioJitter > 50) {
+            quality = 'poor';
+          } else if (videoLoss > 0.5 || audioLoss > 0.5 || videoJitter > 10 || audioJitter > 20) {
+            quality = 'good';
+          }
+        }
+        
+        // Override with failure history if needed
+        if (connectionHealthRef.current.consecutiveFailures >= 3) {
+          quality = 'poor';
+        } else if (connectionHealthRef.current.consecutiveFailures >= 1) {
+          quality = quality === 'excellent' ? 'good' : quality;
+        }
+        
+        setConnectionQuality(quality);
+      } else if (pc.connectionState === "disconnected") {
+        setConnectionQuality('poor');
+        // If we've been disconnected for more than 60 seconds, try to reconnect
+        if (timeSinceLastConnected > 60000) {
+          console.warn("Connection health check: Long disconnection detected, attempting reconnection");
+          // We'll call attemptReconnection when it's available
+          if (typeof attemptReconnection === 'function') {
+            attemptReconnection();
+          }
+        }
+      } else if (pc.connectionState === "failed") {
+        setConnectionQuality('failed');
+      }
+      
+      // If we've had too many consecutive failures, suggest restart
+      if (connectionHealthRef.current.consecutiveFailures >= 5) {
+        console.error("Connection health check: Too many consecutive failures, suggesting restart");
+        setError("Multiple connection failures detected. Consider restarting the stream or checking your network connection.");
+        setConnectionQuality('failed');
+      }
+    }, 10000); // Check every 10 seconds
+  }, [streamId, streamMetrics]);
+
+  const stopConnectionHealthMonitoring = useCallback(() => {
+    if (connectionHealthRef.current.healthCheckInterval) {
+      clearInterval(connectionHealthRef.current.healthCheckInterval);
+      connectionHealthRef.current.healthCheckInterval = null;
+    }
+  }, []);
+
+  const fetchStreamStatus = useCallback(async (currentStreamId: string) => {
+    try {
+      const response = await fetch(`https://daydream.live/api/streams/${currentStreamId}/status`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success && data.data?.gateway_status?.ingest_metrics?.stats) {
+          const stats = data.data.gateway_status.ingest_metrics.stats;
+          const videoTrack = stats.track_stats?.find((track: any) => track.type === 'video');
+          const audioTrack = stats.track_stats?.find((track: any) => track.type === 'audio');
+          
+          if (videoTrack && audioTrack) {
+            setStreamMetrics({
+              video: {
+                jitter: videoTrack.jitter || 0,
+                packets_lost: videoTrack.packets_lost || 0,
+                packets_received: videoTrack.packets_received || 0,
+                packet_loss_pct: videoTrack.packet_loss_pct || 0,
+                rtt: videoTrack.rtt || 0
+              },
+              audio: {
+                jitter: audioTrack.jitter || 0,
+                packets_lost: audioTrack.packets_lost || 0,
+                packets_received: audioTrack.packets_received || 0,
+                packet_loss_pct: audioTrack.packet_loss_pct || 0,
+                rtt: audioTrack.rtt || 0
+              },
+              bytesReceived: stats.peer_conn_stats?.BytesReceived || 0,
+              bytesSent: stats.peer_conn_stats?.BytesSent || 0
+            });
+            
+            if (debugMode) {
+              console.log('📊 Stream metrics updated:', {
+                video: videoTrack,
+                audio: audioTrack,
+                bytes: { received: stats.peer_conn_stats?.BytesReceived, sent: stats.peer_conn_stats?.BytesSent }
+              });
+            }
+          }
+        }
+      } else {
+        if (debugMode) console.warn('Failed to fetch stream status:', response.status);
+      }
+    } catch (error) {
+      if (debugMode) console.warn('Error fetching stream status:', error);
+    }
+  }, [debugMode]);
+
   const mountPlayerIframe = useCallback((id: string | null, retryCount = 0) => {
     const container = outputContainerRef.current;
     if (!container) return;
@@ -188,25 +385,45 @@ export function StreamRender({
     iframe.style.borderRadius = "8px";
     iframe.src = `https://lvpr.tv/?v=${encodeURIComponent(id)}&lowLatency=force&autoplay=true`;
     
-    // Add error handling for iframe with retry logic
+    // Add comprehensive error handling for iframe with improved retry logic
     iframe.onerror = () => {
       console.error("Failed to load iframe player, retry count:", retryCount);
-      if (retryCount < 3) {
-        console.log(`Retrying iframe load in 3 seconds... (${retryCount + 1}/3)`);
+      if (retryCount < 5) { // Increased retry count
+        const retryDelay = Math.min(3000 * Math.pow(1.5, retryCount), 15000); // Exponential backoff, max 15s
+        console.log(`Retrying iframe load in ${retryDelay/1000} seconds... (${retryCount + 1}/5)`);
+        setStatusWithLoading(`Video player failed to load, retrying in ${retryDelay/1000}s... (${retryCount + 1}/5)`);
         setTimeout(() => {
           mountPlayerIframe(id, retryCount + 1);
-        }, 3000);
+        }, retryDelay);
       } else {
-        setError("Failed to load video player after multiple attempts. The stream may not be ready yet.");
+        setError("Failed to load video player after multiple attempts. This may indicate network connectivity issues or the stream is not ready yet. Try refreshing the page or checking your internet connection.");
+        setStatusWithLoading("Video player failed to load");
       }
     };
     
     iframe.onload = () => {
       console.log("Iframe player loaded successfully");
+      setStatusWithLoading("Video player loaded - waiting for stream...");
+    };
+    
+    // Add timeout for iframe loading
+    const loadTimeout = setTimeout(() => {
+      if (!iframe.contentDocument) {
+        console.warn("Iframe load timeout after 30 seconds");
+        if (iframe.onerror) {
+          iframe.onerror(new Event('timeout'));
+        }
+      }
+    }, 30000);
+    
+    iframe.onload = () => {
+      clearTimeout(loadTimeout);
+      console.log("Iframe player loaded successfully");
+      setStatusWithLoading("Video player loaded - waiting for stream...");
     };
     
     container.appendChild(iframe);
-  }, []);
+  }, [setStatusWithLoading]);
 
   const startWhipClient = useCallback(async (whipUrlParam?: string) => {
     const actualWhipUrl = whipUrlParam || whipUrl;
@@ -292,6 +509,11 @@ export function StreamRender({
           setPipelineInitializing(true);
           // Start keepalive monitoring when connected
           startConnectionKeepalive();
+          // Start connection health monitoring
+          startConnectionHealthMonitoring();
+          // Update connection health tracking
+          connectionHealthRef.current.lastConnected = Date.now();
+          connectionHealthRef.current.consecutiveFailures = 0;
           if (debugMode) console.log("✅ WebRTC connection established successfully");
           // Update status after pipeline initialization time
           setTimeout(() => {
@@ -305,18 +527,21 @@ export function StreamRender({
           console.warn("WebRTC connection disconnected - attempting to maintain connection");
           setStatusWithLoading("Connection lost - attempting to reconnect...");
           // Don't immediately fail, give it more time to reconnect during AI pipeline initialization
-          const reconnectDelay = pipelineInitializing ? 30000 : 10000; // 30s if pipeline initializing, 10s otherwise
+          const reconnectDelay = pipelineInitializing ? 45000 : 15000; // Increased timeouts: 45s if pipeline initializing, 15s otherwise
           setTimeout(() => {
             if (rtcPeerConnection.connectionState === "disconnected") {
               if (debugMode) console.log(`Connection still disconnected after ${reconnectDelay/1000}s, attempting restart`);
-              attemptReconnection();
+              attemptReconnection(0);
             }
           }, reconnectDelay);
           break;
         case "failed":
           console.error("RTC Connection failed - attempting reconnection");
           setStatusWithLoading("Connection failed - attempting reconnection...");
-          attemptReconnection();
+          // Track consecutive failures
+          connectionHealthRef.current.consecutiveFailures++;
+          connectionHealthRef.current.connectionAttempts++;
+          attemptReconnection(0);
           break;
         case "closed":
           setStatusWithLoading("Connection closed");
@@ -353,7 +578,7 @@ export function StreamRender({
             }
           } catch (e) {
             console.error("ICE restart failed:", e);
-            attemptReconnection();
+            attemptReconnection(0);
           }
           break;
       }
@@ -419,9 +644,9 @@ export function StreamRender({
     console.log("WHIP connection established successfully");
   }, [whipUrl, setStatusWithLoading, customTurnServer, turnUsername, turnPassword, debugMode]);
 
-  const attemptReconnection = useCallback(async () => {
-    console.log("Attempting WebRTC reconnection...");
-    setStatusWithLoading("Reconnecting...");
+  const attemptReconnection = useCallback(async (retryCount = 0) => {
+    console.log(`Attempting WebRTC reconnection... (attempt ${retryCount + 1})`);
+    setStatusWithLoading(`Reconnecting... (attempt ${retryCount + 1})`);
     
     try {
       // Close existing connection
@@ -430,8 +655,9 @@ export function StreamRender({
         rtcPeerConnectionRef.current = null;
       }
       
-      // Wait a moment before reconnecting
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Wait with exponential backoff before reconnecting
+      const backoffDelay = Math.min(2000 * Math.pow(1.5, retryCount), 10000); // Max 10s delay
+      await new Promise(resolve => setTimeout(resolve, backoffDelay));
       
       // Check if we still have a local stream
       if (!localStreamRef.current) {
@@ -448,9 +674,20 @@ export function StreamRender({
         setError("Lost WHIP URL - please restart stream");
       }
     } catch (error) {
-      console.error("Reconnection failed:", error);
-      setError(`Reconnection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      setStatusWithLoading("Reconnection failed - please restart stream");
+      console.error(`Reconnection attempt ${retryCount + 1} failed:`, error);
+      
+      // Retry up to 3 times with exponential backoff
+      if (retryCount < 2) {
+        const nextRetryDelay = Math.min(5000 * Math.pow(1.5, retryCount), 20000); // Max 20s delay
+        console.log(`Reconnection failed, retrying in ${nextRetryDelay/1000}s... (${retryCount + 2}/3)`);
+        setStatusWithLoading(`Reconnection failed, retrying in ${nextRetryDelay/1000}s... (${retryCount + 2}/3)`);
+        setTimeout(() => {
+          attemptReconnection(retryCount + 1);
+        }, nextRetryDelay);
+      } else {
+        setError(`Reconnection failed after 3 attempts: ${error instanceof Error ? error.message : 'Unknown error'}. Please restart the stream.`);
+        setStatusWithLoading("Reconnection failed - please restart stream");
+      }
     }
   }, [whipUrl, startWhipClient, setStatusWithLoading]);
 
@@ -680,7 +917,7 @@ export function StreamRender({
   }, [params, setStatusWithLoading, externalStreamId, externalApiKey, streamId, checkStreamHealth, isStreaming]);
 
   const startStream = useCallback(async () => {
-    const rawKey = apiKeyRef.current?.value || "";
+    const rawKey = externalApiKey || apiKeyRef.current?.value || "";
     const apiKey = rawKey.replace(/^Bearer\s+/i, "").trim();
     const pipelineId = pipelineIdRef.current?.value.trim() || "";
     if (!apiKey) { setError("Enter your API key."); return; }
@@ -947,7 +1184,7 @@ export function StreamRender({
       setStatusWithLoading(`Error: ${e?.message || "Unknown error"}`);
       await stopStream();
     }
-  }, [mountPlayerIframe, setStatusWithLoading, startWhipClient, updateApiParams]);
+  }, [mountPlayerIframe, setStatusWithLoading, startWhipClient, updateApiParams, externalApiKey]);
 
   const startHealthMonitoring = useCallback(() => {
     if (healthMonitorRef.current) {
@@ -1033,6 +1270,7 @@ export function StreamRender({
     // Stop health monitoring and keepalive
     stopHealthMonitoring();
     stopConnectionKeepalive();
+    stopConnectionHealthMonitoring();
     
     try {
       if (rtcPeerConnectionRef.current) {
@@ -1053,7 +1291,7 @@ export function StreamRender({
       setStatusWithLoading("");
       try { onStreamIdChange?.(null); } catch {}
     }
-  }, [mountPlayerIframe, setStatusWithLoading, stopHealthMonitoring]);
+  }, [mountPlayerIframe, setStatusWithLoading, stopHealthMonitoring, stopConnectionHealthMonitoring]);
 
   const handleParamChange = useCallback((key: keyof StreamParams["params"], value: any) => {
     setParams((prev) => ({ ...prev, params: { ...prev.params, [key]: value } }));
@@ -1126,9 +1364,10 @@ export function StreamRender({
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       stopHealthMonitoring();
       stopConnectionKeepalive();
+      stopConnectionHealthMonitoring();
       stopStream();
     };
-  }, [stopStream, stopHealthMonitoring, stopConnectionKeepalive]);
+  }, [stopStream, stopHealthMonitoring, stopConnectionKeepalive, stopConnectionHealthMonitoring]);
 
   // --- Audio input helpers ---
   const stopAudioProcessing = useCallback(() => {
@@ -1407,8 +1646,8 @@ export function StreamRender({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
-        <div className="xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="rounded-xl border border-gray-800 overflow-hidden bg-gray-900/70">
             <div className="flex items-center justify-between text-xs text-gray-400 px-3 py-2 border-b border-gray-800">
               <span>Your Webcam</span>
@@ -1463,61 +1702,59 @@ export function StreamRender({
         </div>
 
         {/* Right Side Controls */}
-        <div className="xl:col-span-1 space-y-4">
-          {/* Daydream Prompt Section */}
+        <div className="lg:col-span-1 space-y-4">
+          {/* API Configuration Section */}
           <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
-            <h4 className="text-sm font-semibold">AI Generation</h4>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Prompt</label>
-              <textarea
-                value={daydreamPrompt}
-                onChange={(e) => {
-                  setDaydreamPrompt(e.target.value);
-                  onPromptChange?.(e.target.value);
-                }}
-                placeholder="Describe what to generate..."
-                rows={3}
-                className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm"
-              />
-            </div>
-            <button
-              onClick={handleSubmitPrompt}
-              disabled={isSubmittingPrompt}
-              className={`w-full py-2 px-3 rounded text-sm font-medium transition-colors ${
-                isSubmittingPrompt ? "bg-gray-700" : "bg-indigo-600 hover:bg-indigo-700"
-              }`}
-            >
-              {isSubmittingPrompt ? "Submitting..." : "Submit Prompt"}
-            </button>
-            {promptStatus && (
-              <p className="text-xs text-center text-gray-400">{promptStatus}</p>
-            )}
-          </div>
-
-          {/* Fluid Controls Section */}
-          <FluidControls 
-            onStreamReady={(stream) => {
-              // Handle stream ready if needed
-              console.log("Fluid controls stream ready:", stream);
-            }}
-            className="space-y-4"
-          />
-        </div>
-
-        <div className="xl:col-span-3 space-y-3">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">API Key</label>
-              <input ref={apiKeyRef} type="password" placeholder="REPLACE WITH YOUR API KEY" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Pipeline ID</label>
-              <input ref={pipelineIdRef} type="text" defaultValue="pip_qpUgXycjWF6YMeSL" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
+            <h4 className="text-sm font-semibold">API Configuration</h4>
+            <div className="space-y-2">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">API Key</label>
+                <input ref={apiKeyRef} type="password" placeholder="REPLACE WITH YOUR API KEY" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Pipeline ID</label>
+                <input ref={pipelineIdRef} type="text" defaultValue="pip_qpUgXycjWF6YMeSL" className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+              </div>
             </div>
           </div>
-          
+
+          {/* Stream Controls */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold">Stream Controls</h4>
+            <div className="grid grid-cols-1 gap-2">
+              <button onClick={() => (isStreaming ? stopStream() : startStream())} className={`w-full py-2 px-4 rounded-lg font-medium transition-colors bg-gradient-to-r ${isStreaming ? "from-rose-600 to-red-700 hover:from-rose-600/90 hover:to-red-700/90" : "from-indigo-600 to-violet-700 hover:from-indigo-600/90 hover:to-violet-700/90"}`}>{isStreaming ? "Stop" : "Start"}</button>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Status</label>
+                <div className="text-xs">
+                  {error ? (
+                    <span className="inline-flex items-center rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 px-2 py-0.5">{error}</span>
+                  ) : pipelineInitializing ? (
+                    <span className="inline-flex items-center rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5">
+                      <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3 text-amber-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      {status}
+                    </span>
+                  ) : isStreaming ? (
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 border ${
+                      status?.includes("live") && !status?.includes("failed") && !status?.includes("lost") && !status?.includes("reconnect") 
+                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" 
+                        : status?.includes("failed") || status?.includes("lost") || status?.includes("error")
+                        ? "bg-red-500/15 text-red-300 border-red-500/30"
+                        : "bg-yellow-500/15 text-yellow-300 border-yellow-500/30"
+                    }`}>{status || "Streaming live!"}</span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-gray-800 text-gray-300 border border-gray-700 px-2 py-0.5">Idle</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Debug and Network Configuration */}
-          <div className="border-t border-gray-700 pt-3">
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold">Debug & Network</h4>
             <div className="flex items-center gap-2 mb-3">
               <input
                 type="checkbox"
@@ -1526,19 +1763,95 @@ export function StreamRender({
                 onChange={(e) => setDebugMode(e.target.checked)}
                 className="rounded"
               />
-              <label htmlFor="debugMode" className="text-sm font-medium text-gray-300">
+              <label htmlFor="debugMode" className="text-xs font-medium text-gray-300">
                 🐛 Debug Mode
               </label>
             </div>
             
-            <button
-              onClick={testWebRTCConnectivity}
-              className="w-full mb-3 px-3 py-2 rounded bg-orange-600 hover:bg-orange-700 text-white font-medium text-sm transition-colors"
-            >
-              🧪 Test WebRTC
-            </button>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <button
+                onClick={testWebRTCConnectivity}
+                className="px-3 py-2 rounded bg-orange-600 hover:bg-orange-700 text-white font-medium text-xs transition-colors"
+              >
+                🧪 Test WebRTC
+              </button>
+              <button
+                onClick={() => streamId && fetchStreamStatus(streamId)}
+                disabled={!streamId}
+                className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-medium text-xs transition-colors"
+              >
+                📊 Refresh Metrics
+              </button>
+            </div>
             
-            <details className="text-sm">
+            {/* Connection Quality Indicator */}
+            {isStreaming && (
+              <div className="mb-3 p-2 rounded bg-gray-800/50 border border-gray-700">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs text-gray-400">Connection Quality</span>
+                  <span className={`text-xs font-medium ${
+                    connectionQuality === 'excellent' ? 'text-green-400' :
+                    connectionQuality === 'good' ? 'text-yellow-400' :
+                    connectionQuality === 'poor' ? 'text-orange-400' :
+                    'text-red-400'
+                  }`}>
+                    {connectionQuality === 'excellent' ? '🟢 Excellent' :
+                     connectionQuality === 'good' ? '🟡 Good' :
+                     connectionQuality === 'poor' ? '🟠 Poor' :
+                     '🔴 Failed'}
+                  </span>
+                </div>
+                <div className="text-xs text-gray-500 mb-2">
+                  {connectionQuality === 'excellent' && 'Stable connection, optimal performance'}
+                  {connectionQuality === 'good' && 'Good connection, minor issues may occur'}
+                  {connectionQuality === 'poor' && 'Poor connection, frequent issues expected'}
+                  {connectionQuality === 'failed' && 'Connection failed, restart recommended'}
+                </div>
+                
+                {/* Detailed Metrics */}
+                {streamMetrics && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-gray-400 hover:text-white mb-1">
+                      📊 Network Metrics
+                    </summary>
+                    <div className="mt-1 space-y-1 text-gray-500">
+                      <div className="flex justify-between">
+                        <span>Video Loss:</span>
+                        <span className={streamMetrics.video.packet_loss_pct > 2 ? 'text-red-400' : streamMetrics.video.packet_loss_pct > 0.5 ? 'text-yellow-400' : 'text-green-400'}>
+                          {streamMetrics.video.packet_loss_pct.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Audio Loss:</span>
+                        <span className={streamMetrics.audio.packet_loss_pct > 2 ? 'text-red-400' : streamMetrics.audio.packet_loss_pct > 0.5 ? 'text-yellow-400' : 'text-green-400'}>
+                          {streamMetrics.audio.packet_loss_pct.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Video Jitter:</span>
+                        <span className={streamMetrics.video.jitter > 20 ? 'text-red-400' : streamMetrics.video.jitter > 10 ? 'text-yellow-400' : 'text-green-400'}>
+                          {streamMetrics.video.jitter.toFixed(1)}ms
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Audio Jitter:</span>
+                        <span className={streamMetrics.audio.jitter > 50 ? 'text-red-400' : streamMetrics.audio.jitter > 20 ? 'text-yellow-400' : 'text-green-400'}>
+                          {streamMetrics.audio.jitter.toFixed(1)}ms
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Data Received:</span>
+                        <span className="text-blue-400">
+                          {(streamMetrics.bytesReceived / 1024 / 1024).toFixed(1)}MB
+                        </span>
+                      </div>
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
+            
+            <details className="text-xs">
               <summary className="cursor-pointer text-gray-400 hover:text-white mb-2">
                 ⚙️ Network Settings
               </summary>
@@ -1579,28 +1892,34 @@ export function StreamRender({
             </details>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 items-end">
-            <button onClick={() => (isStreaming ? stopStream() : startStream())} className={`w-full py-2 px-4 rounded-lg font-medium transition-colors bg-gradient-to-r ${isStreaming ? "from-rose-600 to-red-700 hover:from-rose-600/90 hover:to-red-700/90" : "from-indigo-600 to-violet-700 hover:from-indigo-600/90 hover:to-violet-700/90"}`}>{isStreaming ? "Stop" : "Start"}</button>
+          {/* Daydream Prompt Section */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold">AI Generation</h4>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Status</label>
-              <div className="text-xs">
-                {error ? (
-                  <span className="inline-flex items-center rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 px-2 py-0.5">{error}</span>
-                ) : pipelineInitializing ? (
-                  <span className="inline-flex items-center rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5">
-                    <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3 text-amber-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    {status}
-                  </span>
-                ) : isStreaming ? (
-                  <span className="inline-flex items-center rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5">{status || "Streaming live!"}</span>
-                ) : (
-                  <span className="inline-flex items-center rounded-full bg-gray-800 text-gray-300 border border-gray-700 px-2 py-0.5">Idle</span>
-                )}
-              </div>
+              <label className="block text-xs text-gray-400 mb-1">Prompt</label>
+              <textarea
+                value={daydreamPrompt}
+                onChange={(e) => {
+                  setDaydreamPrompt(e.target.value);
+                  onPromptChange?.(e.target.value);
+                }}
+                placeholder="Describe what to generate..."
+                rows={3}
+                className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm"
+              />
             </div>
+            <button
+              onClick={handleSubmitPrompt}
+              disabled={isSubmittingPrompt}
+              className={`w-full py-2 px-3 rounded text-sm font-medium transition-colors ${
+                isSubmittingPrompt ? "bg-gray-700" : "bg-indigo-600 hover:bg-indigo-700"
+              }`}
+            >
+              {isSubmittingPrompt ? "Submitting..." : "Submit Prompt"}
+            </button>
+            {promptStatus && (
+              <p className="text-xs text-center text-gray-400">{promptStatus}</p>
+            )}
           </div>
 
           {/* Audio Input */}
@@ -1627,104 +1946,109 @@ export function StreamRender({
             <p className="text-[11px] text-gray-500">How much audio affects the AI rendering</p>
           </div>
 
-          {/* <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
-            <label className="block text-xs text-gray-400 mb-1">Prompt</label>
-            <input value={params.params.prompt} onChange={(e) => handleParamChange("prompt", e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
-          </div>
-          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
-            <label className="block text-xs text-gray-400 mb-1">Negative Prompt</label>
-            <input value={params.params.negative_prompt} onChange={(e) => handleParamChange("negative_prompt", e.target.value)} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
-          </div> */}
+          {/* Advanced Parameters */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 space-y-3">
+            <h4 className="text-sm font-semibold">Advanced Parameters</h4>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Steps: {params.params.num_inference_steps}</label>
+                <input type="range" min={1} max={100} step={1} value={params.params.num_inference_steps} onChange={(e) => handleParamChange("num_inference_steps", Number(e.target.value))} className="w-full" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Seed</label>
+                <input type="number" value={params.params.seed} onChange={(e) => handleParamChange("seed", Number(e.target.value))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">t_index_list</label>
+                <input type="text" value={params.params.t_index_list.join(",")} onChange={(e) => handleParamChange("t_index_list", e.target.value.split(",").map((v) => Number(v.trim())).filter((v) => Number.isFinite(v)))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm" />
+              </div>
+            </div>
 
-          
-
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Steps: {params.params.num_inference_steps}</label>
-              <input type="range" min={1} max={100} step={1} value={params.params.num_inference_steps} onChange={(e) => handleParamChange("num_inference_steps", Number(e.target.value))} className="w-full" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Seed</label>
-              <input type="number" value={params.params.seed} onChange={(e) => handleParamChange("seed", Number(e.target.value))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">t_index_list</label>
-              <input type="text" value={params.params.t_index_list.join(",")} onChange={(e) => handleParamChange("t_index_list", e.target.value.split(",").map((v) => Number(v.trim())).filter((v) => Number.isFinite(v)))} className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2" />
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-3">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-semibold">Denoise</h4>
-              <span className="text-[11px] text-gray-500">affects speed, style, quality</span>
-            </div>
             <div className="space-y-2">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">X: {params.params.t_index_list[0] ?? 0}</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={30}
-                  step={1}
-                  value={params.params.t_index_list[0] ?? 0}
-                  onChange={(e) => handleDenoiseIndexChange(0, Number(e.target.value))}
-                  className="w-full"
-                />
+              <div className="flex items-center justify-between mb-2">
+                <h5 className="text-xs font-semibold">Denoise</h5>
+                <span className="text-[11px] text-gray-500">affects speed, style, quality</span>
               </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Y: {params.params.t_index_list[1] ?? 0}</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={30}
-                  step={1}
-                  value={params.params.t_index_list[1] ?? 0}
-                  onChange={(e) => handleDenoiseIndexChange(1, Number(e.target.value))}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Z: {params.params.t_index_list[2] ?? 0}</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={30}
-                  step={1}
-                  value={params.params.t_index_list[2] ?? 0}
-                  onChange={(e) => handleDenoiseIndexChange(2, Number(e.target.value))}
-                  className="w-full"
-                />
-              </div>
-              <div className="text-[11px] text-gray-400 mt-2">
-                Denoising steps values:
-                <div className="mt-1 grid grid-cols-3 gap-2">
-                  {params.params.t_index_list.slice(0, 3).map((v, i) => (
-                    <div key={i} className="rounded border border-gray-700 bg-gray-800 text-center py-1 text-gray-200">{v}</div>
-                  ))}
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">X: {params.params.t_index_list[0] ?? 0}</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={params.params.t_index_list[0] ?? 0}
+                    onChange={(e) => handleDenoiseIndexChange(0, Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Y: {params.params.t_index_list[1] ?? 0}</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={params.params.t_index_list[1] ?? 0}
+                    onChange={(e) => handleDenoiseIndexChange(1, Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Z: {params.params.t_index_list[2] ?? 0}</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={30}
+                    step={1}
+                    value={params.params.t_index_list[2] ?? 0}
+                    onChange={(e) => handleDenoiseIndexChange(2, Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div className="text-[11px] text-gray-400 mt-2">
+                  Denoising steps values:
+                  <div className="mt-1 grid grid-cols-3 gap-2">
+                    {params.params.t_index_list.slice(0, 3).map((v, i) => (
+                      <div key={i} className="rounded border border-gray-700 bg-gray-800 text-center py-1 text-gray-200">{v}</div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="border-t border-gray-800 pt-3">
-            <h4 className="text-sm font-semibold mb-2">ControlNets</h4>
-            {[
-              "Pose Estimation",
-              "Soft Edges (HED)",
-              "Sharp Edges (Canny)",
-              "Depth Estimation",
-              "Color Preservation",
-            ].map((label, i) => (
-              <div key={label} className="mb-2">
-                <div className="flex items-center justify-between text-xs text-gray-400">
-                  <label>{label}</label>
-                  <span className="text-[11px] text-gray-500">{params.params.controlnets[i]?.conditioning_scale.toFixed(2)}</span>
+            <div className="border-t border-gray-800 pt-3">
+              <h5 className="text-xs font-semibold mb-2">ControlNets</h5>
+              {[
+                "Pose Estimation",
+                "Soft Edges (HED)",
+                "Sharp Edges (Canny)",
+                "Depth Estimation",
+                "Color Preservation",
+              ].map((label, i) => (
+                <div key={label} className="mb-2">
+                  <div className="flex items-center justify-between text-xs text-gray-400">
+                    <label>{label}</label>
+                    <span className="text-[11px] text-gray-500">{params.params.controlnets[i]?.conditioning_scale.toFixed(2)}</span>
+                  </div>
+                  <input type="range" min={0} max={1} step={0.01} value={params.params.controlnets[i]?.conditioning_scale || 0} onChange={(e) => handleControlNetChange(i, Number(e.target.value))} className="w-full" />
                 </div>
-                <input type="range" min={0} max={1} step={0.01} value={params.params.controlnets[i]?.conditioning_scale || 0} onChange={(e) => handleControlNetChange(i, Number(e.target.value))} className="w-full" />
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
+
+          {/* Fluid Controls Section */}
+          <FluidControls 
+            onStreamReady={(stream) => {
+              // Handle stream ready if needed
+              console.log("Fluid controls stream ready:", stream);
+            }}
+            className="space-y-4"
+          />
+        </div>
+
+        <div className="lg:col-span-3 space-y-3">
           {/* Speech Recognition & Text Layers */}
           <div className="rounded-xl border w-full border-gray-800 bg-gray-900/70 p-4 space-y-3">
             <div className="flex items-center justify-between">

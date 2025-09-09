@@ -22,7 +22,7 @@ export default function App() {
       <div className="container mx-auto px-4 py-8">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent mb-2">
-            Creative PixelPlay AI
+            CREATIVE Pixels
           </h1>
           <p className="text-gray-400">
             Transform your world in real-time.
