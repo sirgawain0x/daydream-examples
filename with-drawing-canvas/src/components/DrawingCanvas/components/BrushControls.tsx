@@ -51,7 +51,7 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
             type="checkbox"
             checked={fadingEnabled}
             onChange={e => onFadingToggle(e.target.checked)}
-            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2 cursor-pointer"
           />
           <span className="text-sm text-gray-600">Fade</span>
         </label>

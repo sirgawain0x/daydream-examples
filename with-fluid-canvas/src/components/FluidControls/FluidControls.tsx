@@ -233,14 +233,14 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
           <button
             key={p}
             onClick={() => applyPreset(p)}
-            className="px-3 py-1.5 rounded-full text-xs font-medium border border-gray-700 bg-gray-800 hover:border-gray-600 hover:bg-gray-700 transition-colors"
+            className="px-3 py-1.5 rounded-full text-xs font-medium border border-gray-700 bg-gray-800 hover:border-gray-600 hover:bg-gray-700 transition-colors cursor-pointer"
           >
             {p}
           </button>
         ))}
         <button
           onClick={randomizeFluid}
-          className="px-3 py-1.5 rounded-full text-xs font-semibold border border-pink-600/40 bg-pink-600/10 text-pink-200 hover:bg-pink-600/20 transition-colors"
+          className="px-3 py-1.5 rounded-full text-xs font-semibold border border-pink-600/40 bg-pink-600/10 text-pink-200 hover:bg-pink-600/20 transition-colors cursor-pointer"
         >
           Surprise me
         </button>
@@ -268,7 +268,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
             max="50000"
             value={splatForce}
             onChange={(e) => setSplatForce(Number(e.target.value))}
-            className="w-full"
+            className="w-full cursor-pointer"
           />
         </div>
 
@@ -282,7 +282,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
             max="100"
             value={curl}
             onChange={(e) => setCurl(Number(e.target.value))}
-            className="w-full"
+            className="w-full cursor-pointer"
           />
         </div>
 
@@ -297,7 +297,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
             step="0.01"
             value={velocityDissipation}
             onChange={(e) => setVelocityDissipation(Number(e.target.value))}
-            className="w-full"
+            className="w-full cursor-pointer"
           />
         </div>
 
@@ -312,7 +312,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
             step="0.1"
             value={glow}
             onChange={(e) => setGlow(Number(e.target.value))}
-            className="w-full"
+            className="w-full cursor-pointer"
           />
         </div>
 
@@ -322,7 +322,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
           
           <button
             onClick={() => setIsRandomMotionActive(!isRandomMotionActive)}
-            className={`w-full py-2 px-4 rounded font-medium transition-colors ${
+            className={`w-full py-2 px-4 rounded font-medium transition-colors cursor-pointer ${
               isRandomMotionActive
                 ? "bg-red-600 hover:bg-red-700"
                 : "bg-green-600 hover:bg-green-700"
@@ -350,7 +350,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
                 startMicrophone();
               }
             }}
-            className={`w-full py-2 px-4 rounded font-medium transition-colors ${
+            className={`w-full py-2 px-4 rounded font-medium transition-colors cursor-pointer ${
               isAudioReactive
                 ? "bg-red-600 hover:bg-red-700"
                 : "bg-blue-600 hover:bg-blue-700"
@@ -376,7 +376,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
                   step="0.1"
                   value={audioSensitivity}
                   onChange={(e) => setAudioSensitivity(Number(e.target.value))}
-                  className="w-full"
+                  className="w-full cursor-pointer"
                 />
               </div>
               
@@ -391,7 +391,7 @@ export function FluidControls({ onStreamReady, className = "" }: FluidControlsPr
                   step="0.1"
                   value={beatThreshold}
                   onChange={(e) => setBeatThreshold(Number(e.target.value))}
-                  className="w-full"
+                  className="w-full cursor-pointer"
                 />
               </div>
               

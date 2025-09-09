@@ -115,7 +115,7 @@
         outline: none;
       }
       textarea { min-height: 64px; resize: vertical; }
-      input[type="range"] { width: 100%; }
+      input[type="range"] { width: 100%; cursor: pointer; }
       .slider-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
       .muted { color: var(--muted); font-size: 12px; }
 
@@ -360,20 +360,12 @@
           setStatus('Creating stream...');
           els.startStop.disabled = true;
           try {
-            // 1) Create stream
-            let res = await fetch(`${API_BASE}/v1/streams`, {
+            // 1) Create stream using Vercel function
+            let res = await fetch('/api/create-stream', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-              body: JSON.stringify({ pipeline_params: { pipeline_id: pipelineId }, name: 'StreamDiffusion Playground', output_rtmp_url: '' })
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pipeline_id: pipelineId })
             });
-            if (!res.ok && res.status !== 401) {
-              // Fallback to legacy schema
-              res = await fetch(`${API_BASE}/v1/streams`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-                body: JSON.stringify({ pipeline_id: pipelineId })
-              });
-            }
             if (!res.ok) {
               const err = await safeJson(res);
               throw new Error(`Create stream failed: ${err.message || res.statusText}`);
@@ -475,10 +467,13 @@
           if (payload && payload.params && Array.isArray(payload.params.controlnets)) {
             for (const cn of payload.params.controlnets) delete cn.name;
           }
-          const res = await fetch(`${API_BASE}${PROMPTS_PATH}/${encodeURIComponent(streamId)}/prompts`, {
+          const res = await fetch('/api/update-stream-prompts', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
-            body: JSON.stringify(payload)
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              streamId: streamId,
+              prompts: payload
+            })
           });
           if (!res.ok) {
             let msg = 'Failed to update params';

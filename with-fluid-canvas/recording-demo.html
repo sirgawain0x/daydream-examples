@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Output Recording Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin: 0;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .demo-section {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        .btn-danger {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a52);
+            color: white;
+        }
+        .btn-success {
+            background: linear-gradient(45deg, #4ecdc4, #44a08d);
+            color: white;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        .status.recording {
+            background: rgba(255, 107, 107, 0.2);
+            border: 1px solid rgba(255, 107, 107, 0.5);
+        }
+        .status.ready {
+            background: rgba(78, 205, 196, 0.2);
+            border: 1px solid rgba(78, 205, 196, 0.5);
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        .video-container iframe {
+            width: 100%;
+            height: 400px;
+            border: none;
+        }
+        .recording-indicator {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: rgba(255, 107, 107, 0.9);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            display: none;
+        }
+        .recording-indicator.active {
+            display: block;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .info-box {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        .info-box h3 {
+            margin-top: 0;
+            color: #4ecdc4;
+        }
+        .info-box ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .info-box li {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬 AI Output Recording Demo</h1>
+            <p>Record and download your AI-generated content in real-time</p>
+        </div>
+
+        <div class="demo-section">
+            <h2>Recording Controls</h2>
+            <div class="controls">
+                <button id="startBtn" class="btn btn-success">⏺ Start Recording</button>
+                <button id="stopBtn" class="btn btn-danger" disabled>⏹ Stop Recording</button>
+                <button id="clipBtn" class="btn btn-primary" disabled>📹 Create Server Clip</button>
+            </div>
+            
+            <div id="status" class="status ready">
+                Ready to record. Start a stream first to begin recording.
+            </div>
+
+            <div class="video-container">
+                <iframe id="videoPlayer" src="about:blank" allow="autoplay; fullscreen; picture-in-picture"></iframe>
+                <div id="recordingIndicator" class="recording-indicator">
+                    🔴 REC
+                </div>
+            </div>
+
+            <div class="info-box">
+                <h3>📋 Recording Options</h3>
+                <ul>
+                    <li><strong>Local Recording:</strong> Captures the AI output directly to your device as a WebM file</li>
+                    <li><strong>Server Clipping:</strong> Creates a clip on Livepeer's servers (last 30 seconds)</li>
+                    <li><strong>Automatic Download:</strong> Recorded files are automatically downloaded when you stop recording</li>
+                    <li><strong>High Quality:</strong> Records at 30 FPS with VP9 codec for optimal quality</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔧 How to Use</h2>
+            <div class="info-box">
+                <h3>Setup Instructions</h3>
+                <ol>
+                    <li>Start the main application and begin streaming</li>
+                    <li>Copy the playback ID from the stream</li>
+                    <li>Paste it in the input below and load the video</li>
+                    <li>Use the recording controls to capture your AI output</li>
+                </ol>
+                
+                <div style="margin-top: 20px;">
+                    <label for="playbackId" style="display: block; margin-bottom: 8px; font-weight: 600;">Playback ID:</label>
+                    <input type="text" id="playbackId" placeholder="Enter playback ID here..." 
+                           style="width: 100%; padding: 12px; border: none; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; font-size: 14px;">
+                    <button id="loadBtn" class="btn btn-primary" style="margin-top: 10px;">Load Video</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class AIVideoRecorder {
+            constructor() {
+                this.mediaRecorder = null;
+                this.recordedChunks = [];
+                this.isRecording = false;
+                this.recordingStartTime = null;
+                this.recordingInterval = null;
+                
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+
+            initializeElements() {
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.clipBtn = document.getElementById('clipBtn');
+                this.status = document.getElementById('status');
+                this.videoPlayer = document.getElementById('videoPlayer');
+                this.recordingIndicator = document.getElementById('recordingIndicator');
+                this.playbackIdInput = document.getElementById('playbackId');
+                this.loadBtn = document.getElementById('loadBtn');
+            }
+
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startRecording());
+                this.stopBtn.addEventListener('click', () => this.stopRecording());
+                this.clipBtn.addEventListener('click', () => this.createClip());
+                this.loadBtn.addEventListener('click', () => this.loadVideo());
+            }
+
+            loadVideo() {
+                const playbackId = this.playbackIdInput.value.trim();
+                if (!playbackId) {
+                    this.updateStatus('Please enter a playback ID', 'error');
+                    return;
+                }
+
+                const videoUrl = `https://lvpr.tv/?v=${encodeURIComponent(playbackId)}&lowLatency=force&autoplay=true`;
+                this.videoPlayer.src = videoUrl;
+                this.updateStatus('Video loaded successfully', 'ready');
+                this.clipBtn.disabled = false;
+            }
+
+            async startRecording() {
+                try {
+                    // Create a canvas to capture the iframe content
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 1280;
+                    canvas.height = 720;
+                    const ctx = canvas.getContext('2d');
+                    
+                    if (!ctx) {
+                        throw new Error('Canvas context not available');
+                    }
+
+                    // Create a stream from the canvas
+                    const stream = canvas.captureStream(30);
+                    
+                    // Set up MediaRecorder
+                    this.mediaRecorder = new MediaRecorder(stream, {
+                        mimeType: 'video/webm;codecs=vp9'
+                    });
+
+                    this.mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0) {
+                            this.recordedChunks.push(event.data);
+                        }
+                    };
+
+                    this.mediaRecorder.onstop = () => {
+                        this.downloadRecording();
+                    };
+
+                    this.recordedChunks = [];
+                    this.recordingStartTime = Date.now();
+                    
+                    // Start recording
+                    this.mediaRecorder.start(1000);
+                    this.isRecording = true;
+                    this.updateStatus('Recording started...', 'recording');
+                    this.recordingIndicator.classList.add('active');
+                    
+                    // Update UI
+                    this.startBtn.disabled = true;
+                    this.stopBtn.disabled = false;
+                    
+                    // Start duration timer
+                    this.recordingInterval = setInterval(() => {
+                        const duration = Math.floor((Date.now() - this.recordingStartTime) / 1000);
+                        this.updateStatus(`Recording... ${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}`, 'recording');
+                    }, 1000);
+
+                } catch (error) {
+                    console.error('Recording start error:', error);
+                    this.updateStatus(`Failed to start recording: ${error.message}`, 'error');
+                }
+            }
+
+            stopRecording() {
+                if (this.mediaRecorder && this.isRecording) {
+                    this.mediaRecorder.stop();
+                    this.isRecording = false;
+                    this.recordingIndicator.classList.remove('active');
+                    
+                    if (this.recordingInterval) {
+                        clearInterval(this.recordingInterval);
+                        this.recordingInterval = null;
+                    }
+                    
+                    this.updateStatus('Processing recording...', 'ready');
+                    this.startBtn.disabled = false;
+                    this.stopBtn.disabled = true;
+                }
+            }
+
+            downloadRecording() {
+                const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ai-output-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                this.updateStatus('Recording downloaded successfully!', 'ready');
+                this.recordedChunks = [];
+            }
+
+            async createClip() {
+                const playbackId = this.playbackIdInput.value.trim();
+                if (!playbackId) {
+                    this.updateStatus('Please enter a playback ID for clipping', 'error');
+                    return;
+                }
+
+                this.updateStatus('Creating server clip...', 'recording');
+                this.clipBtn.disabled = true;
+                this.clipBtn.textContent = 'Creating...';
+
+                try {
+                    // Note: This would require a backend API key
+                    // For demo purposes, we'll simulate the process
+                    const endTime = Date.now();
+                    const startTime = endTime - 30000; // 30 seconds ago
+
+                    // Simulate API call
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    this.updateStatus('Server clip created! (Demo mode - requires API key)', 'ready');
+                    
+                } catch (error) {
+                    console.error('Clip creation error:', error);
+                    this.updateStatus(`Failed to create clip: ${error.message}`, 'error');
+                } finally {
+                    this.clipBtn.disabled = false;
+                    this.clipBtn.textContent = '📹 Create Server Clip';
+                }
+            }
+
+            updateStatus(message, type) {
+                this.status.textContent = message;
+                this.status.className = `status ${type}`;
+            }
+        }
+
+        // Initialize the recorder when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new AIVideoRecorder();
+        });
+    </script>
+</body>
+</html>

@@ -159,13 +159,13 @@ export const MultiInputPreview: React.FC<MultiInputPreviewProps> = ({
           <div className="flex gap-2">
             <button
               onClick={camera.requestPermission}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
             >
               Request Camera
             </button>
             <button
               onClick={switchToScreenShare}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors cursor-pointer"
             >
               Share Screen Instead
             </button>
@@ -182,13 +182,13 @@ export const MultiInputPreview: React.FC<MultiInputPreviewProps> = ({
           <div className="flex gap-2">
             <button
               onClick={screenShare.requestPermission}
-              className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors cursor-pointer"
             >
               Request Screen Share
             </button>
             <button
               onClick={switchToCamera}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
             >
               Use Camera Instead
             </button>
@@ -207,7 +207,7 @@ export const MultiInputPreview: React.FC<MultiInputPreviewProps> = ({
           </div>
           <button
             onClick={currentMode === "camera" ? switchToCamera : switchToScreenShare}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors cursor-pointer"
           >
             Try Again
           </button>
@@ -255,13 +255,13 @@ export const MultiInputPreview: React.FC<MultiInputPreviewProps> = ({
           <div className="flex gap-2">
             <button
               onClick={switchToCamera}
-              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium"
+              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-medium cursor-pointer"
             >
               Start Camera
             </button>
             <button
               onClick={switchToScreenShare}
-              className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition-colors font-medium"
+              className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition-colors font-medium cursor-pointer"
             >
               Share Screen
             </button>

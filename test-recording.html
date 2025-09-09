@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recording Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .btn {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.info { background: #d1ecf1; color: #0c5460; }
+        .video-container {
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        .video-container iframe {
+            width: 100%;
+            height: 300px;
+            border: none;
+        }
+        .recording-indicator {
+            display: none;
+            background: #dc3545;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .recording-indicator.active {
+            display: inline-block;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 Recording Functionality Test</h1>
+        <p>This page tests the recording functionality for AI output streams.</p>
+
+        <div class="test-section">
+            <h2>1. MediaRecorder Support Test</h2>
+            <button id="testMediaRecorder" class="btn btn-primary">Test MediaRecorder</button>
+            <div id="mediaRecorderStatus" class="status info">Click to test MediaRecorder support</div>
+        </div>
+
+        <div class="test-section">
+            <h2>2. Canvas Recording Test</h2>
+            <button id="testCanvasRecording" class="btn btn-primary">Test Canvas Recording</button>
+            <div id="canvasStatus" class="status info">Click to test canvas recording</div>
+            <canvas id="testCanvas" width="640" height="360" style="border: 1px solid #ccc; margin: 10px 0;"></canvas>
+        </div>
+
+        <div class="test-section">
+            <h2>3. Video Player Test</h2>
+            <input type="text" id="playbackId" placeholder="Enter playback ID" style="width: 300px; padding: 8px; margin-right: 10px;">
+            <button id="loadVideo" class="btn btn-primary">Load Video</button>
+            <div class="video-container">
+                <iframe id="videoPlayer" src="about:blank"></iframe>
+            </div>
+            <div id="videoStatus" class="status info">Enter a playback ID and click Load Video</div>
+        </div>
+
+        <div class="test-section">
+            <h2>4. Recording Test</h2>
+            <button id="startRecording" class="btn btn-success" disabled>Start Recording</button>
+            <button id="stopRecording" class="btn btn-danger" disabled>Stop Recording</button>
+            <span id="recordingIndicator" class="recording-indicator">🔴 REC</span>
+            <div id="recordingStatus" class="status info">Load a video first to enable recording</div>
+        </div>
+
+        <div class="test-section">
+            <h2>5. API Test</h2>
+            <input type="password" id="apiKey" placeholder="Enter Livepeer API key" style="width: 300px; padding: 8px; margin-right: 10px;">
+            <button id="testAPI" class="btn btn-primary">Test API</button>
+            <div id="apiStatus" class="status info">Enter API key to test Livepeer API</div>
+        </div>
+    </div>
+
+    <script>
+        class RecordingTester {
+            constructor() {
+                this.mediaRecorder = null;
+                this.recordedChunks = [];
+                this.isRecording = false;
+                this.recordingStartTime = null;
+                this.recordingInterval = null;
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.setupCanvas();
+            }
+
+            initializeElements() {
+                this.elements = {
+                    testMediaRecorder: document.getElementById('testMediaRecorder'),
+                    mediaRecorderStatus: document.getElementById('mediaRecorderStatus'),
+                    testCanvasRecording: document.getElementById('testCanvasRecording'),
+                    canvasStatus: document.getElementById('canvasStatus'),
+                    testCanvas: document.getElementById('testCanvas'),
+                    playbackId: document.getElementById('playbackId'),
+                    loadVideo: document.getElementById('loadVideo'),
+                    videoPlayer: document.getElementById('videoPlayer'),
+                    videoStatus: document.getElementById('videoStatus'),
+                    startRecording: document.getElementById('startRecording'),
+                    stopRecording: document.getElementById('stopRecording'),
+                    recordingIndicator: document.getElementById('recordingIndicator'),
+                    recordingStatus: document.getElementById('recordingStatus'),
+                    apiKey: document.getElementById('apiKey'),
+                    testAPI: document.getElementById('testAPI'),
+                    apiStatus: document.getElementById('apiStatus')
+                };
+            }
+
+            setupEventListeners() {
+                this.elements.testMediaRecorder.addEventListener('click', () => this.testMediaRecorder());
+                this.elements.testCanvasRecording.addEventListener('click', () => this.testCanvasRecording());
+                this.elements.loadVideo.addEventListener('click', () => this.loadVideo());
+                this.elements.startRecording.addEventListener('click', () => this.startRecording());
+                this.elements.stopRecording.addEventListener('click', () => this.stopRecording());
+                this.elements.testAPI.addEventListener('click', () => this.testAPI());
+            }
+
+            setupCanvas() {
+                const canvas = this.elements.testCanvas;
+                const ctx = canvas.getContext('2d');
+                
+                // Draw a simple animation
+                let frame = 0;
+                const animate = () => {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    // Draw a moving circle
+                    const x = (canvas.width / 2) + Math.sin(frame * 0.1) * 100;
+                    const y = (canvas.height / 2) + Math.cos(frame * 0.1) * 50;
+                    
+                    ctx.fillStyle = `hsl(${frame % 360}, 70%, 50%)`;
+                    ctx.beginPath();
+                    ctx.arc(x, y, 20, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Draw text
+                    ctx.fillStyle = '#333';
+                    ctx.font = '16px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Test Animation', canvas.width / 2, canvas.height - 20);
+                    ctx.fillText(`Frame: ${frame}`, canvas.width / 2, canvas.height - 40);
+                    
+                    frame++;
+                    requestAnimationFrame(animate);
+                };
+                
+                animate();
+            }
+
+            testMediaRecorder() {
+                if (typeof MediaRecorder === 'undefined') {
+                    this.updateStatus(this.elements.mediaRecorderStatus, 'MediaRecorder not supported', 'error');
+                    return;
+                }
+
+                try {
+                    const canvas = this.elements.testCanvas;
+                    const stream = canvas.captureStream(30);
+                    const mediaRecorder = new MediaRecorder(stream);
+                    
+                    this.updateStatus(this.elements.mediaRecorderStatus, 'MediaRecorder supported! ✅', 'success');
+                } catch (error) {
+                    this.updateStatus(this.elements.mediaRecorderStatus, `MediaRecorder error: ${error.message}`, 'error');
+                }
+            }
+
+            testCanvasRecording() {
+                try {
+                    const canvas = this.elements.testCanvas;
+                    const stream = canvas.captureStream(30);
+                    const mediaRecorder = new MediaRecorder(stream, {
+                        mimeType: 'video/webm;codecs=vp9'
+                    });
+
+                    const chunks = [];
+                    mediaRecorder.ondataavailable = (event) => {
+                        chunks.push(event.data);
+                    };
+
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(chunks, { type: 'video/webm' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'canvas-test.webm';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        this.updateStatus(this.elements.canvasStatus, 'Canvas recording test completed! File downloaded.', 'success');
+                    };
+
+                    mediaRecorder.start();
+                    setTimeout(() => {
+                        mediaRecorder.stop();
+                    }, 3000);
+
+                    this.updateStatus(this.elements.canvasStatus, 'Recording canvas for 3 seconds...', 'info');
+                } catch (error) {
+                    this.updateStatus(this.elements.canvasStatus, `Canvas recording error: ${error.message}`, 'error');
+                }
+            }
+
+            loadVideo() {
+                const playbackId = this.elements.playbackId.value.trim();
+                if (!playbackId) {
+                    this.updateStatus(this.elements.videoStatus, 'Please enter a playback ID', 'error');
+                    return;
+                }
+
+                const videoUrl = `https://lvpr.tv/?v=${encodeURIComponent(playbackId)}&lowLatency=force&autoplay=true`;
+                this.elements.videoPlayer.src = videoUrl;
+                this.updateStatus(this.elements.videoStatus, 'Video loaded successfully', 'success');
+                this.elements.startRecording.disabled = false;
+            }
+
+            startRecording() {
+                try {
+                    const canvas = this.elements.testCanvas;
+                    const stream = canvas.captureStream(30);
+                    
+                    this.mediaRecorder = new MediaRecorder(stream, {
+                        mimeType: 'video/webm;codecs=vp9'
+                    });
+
+                    this.mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0) {
+                            this.recordedChunks.push(event.data);
+                        }
+                    };
+
+                    this.mediaRecorder.onstop = () => {
+                        const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `recording-test-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        this.recordedChunks = [];
+                        this.updateStatus(this.elements.recordingStatus, 'Recording completed and downloaded!', 'success');
+                    };
+
+                    this.mediaRecorder.start(1000);
+                    this.isRecording = true;
+                    this.recordingStartTime = Date.now();
+                    
+                    this.elements.startRecording.disabled = true;
+                    this.elements.stopRecording.disabled = false;
+                    this.elements.recordingIndicator.classList.add('active');
+                    
+                    this.recordingInterval = setInterval(() => {
+                        const duration = Math.floor((Date.now() - this.recordingStartTime) / 1000);
+                        this.updateStatus(this.elements.recordingStatus, `Recording... ${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}`, 'info');
+                    }, 1000);
+
+                    this.updateStatus(this.elements.recordingStatus, 'Recording started...', 'info');
+                } catch (error) {
+                    this.updateStatus(this.elements.recordingStatus, `Recording error: ${error.message}`, 'error');
+                }
+            }
+
+            stopRecording() {
+                if (this.mediaRecorder && this.isRecording) {
+                    this.mediaRecorder.stop();
+                    this.isRecording = false;
+                    
+                    if (this.recordingInterval) {
+                        clearInterval(this.recordingInterval);
+                        this.recordingInterval = null;
+                    }
+                    
+                    this.elements.startRecording.disabled = false;
+                    this.elements.stopRecording.disabled = true;
+                    this.elements.recordingIndicator.classList.remove('active');
+                    
+                    this.updateStatus(this.elements.recordingStatus, 'Processing recording...', 'info');
+                }
+            }
+
+            async testAPI() {
+                const apiKey = this.elements.apiKey.value.trim();
+                if (!apiKey) {
+                    this.updateStatus(this.elements.apiStatus, 'Please enter an API key', 'error');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('https://livepeer.studio/api/asset', {
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`
+                        }
+                    });
+
+                    if (response.ok) {
+                        this.updateStatus(this.elements.apiStatus, 'API key is valid! ✅', 'success');
+                    } else {
+                        this.updateStatus(this.elements.apiStatus, `API error: ${response.status} ${response.statusText}`, 'error');
+                    }
+                } catch (error) {
+                    this.updateStatus(this.elements.apiStatus, `API test error: ${error.message}`, 'error');
+                }
+            }
+
+            updateStatus(element, message, type) {
+                element.textContent = message;
+                element.className = `status ${type}`;
+            }
+        }
+
+        // Initialize the tester when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new RecordingTester();
+        });
+    </script>
+</body>
+</html>
