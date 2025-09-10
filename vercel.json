@@ -1,6 +1,6 @@
 {
-  "buildCommand": "echo 'No build needed for API-only deployment'",
-  "outputDirectory": ".",
+  "buildCommand": "cd with-camera-input && npm install && npm run build",
+  "outputDirectory": "with-camera-input/dist",
   "functions": {
     "api/**/*.js": {}
   }

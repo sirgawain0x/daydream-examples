@@ -81,6 +81,11 @@ export function StreamRender({
   } | null>(null);
   const [pipelineInitializing, setPipelineInitializing] = useState(false);
 
+  // Add new state for fluid canvas integration
+  const [useFluidCanvasAsInput, setUseFluidCanvasAsInput] = useState(false);
+  const [fluidCanvasStream, setFluidCanvasStream] = useState<MediaStream | null>(null);
+  const [inputSource, setInputSource] = useState<'webcam' | 'fluid'>('webcam');
+
   const apiKeyRef = useRef<HTMLInputElement | null>(null);
   const pipelineIdRef = useRef<HTMLInputElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1072,20 +1077,32 @@ export function StreamRender({
       setPlaybackId(streamData.output_playback_id);
       try { onStreamIdChange?.(streamData.id); } catch {}
 
-      console.log("Requesting webcam access...");
-      const media = await navigator.mediaDevices.getUserMedia({ 
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } }, 
-        audio: false 
-      });
+      console.log("Requesting input source...");
+      let media: MediaStream;
+      
+      if (useFluidCanvasAsInput && fluidCanvasStream) {
+        // Use fluid canvas stream as input
+        console.log("Using fluid canvas stream as AI input");
+        media = fluidCanvasStream;
+        setInputSource('fluid');
+      } else {
+        // Use webcam as input (existing behavior)
+        console.log("Using webcam as AI input");
+        media = await navigator.mediaDevices.getUserMedia({ 
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } }, 
+          audio: false 
+        });
+        setInputSource('webcam');
+      }
 
       // Verify we got video tracks
       const videoTracks = media.getVideoTracks();
       const audioTracks = media.getAudioTracks();
       console.log(`Got ${videoTracks.length} video tracks and ${audioTracks.length} audio tracks`);
       
-      if (videoTracks.length === 0) {
-        throw new Error("No video tracks available from webcam. Please check camera permissions.");
-      }
+        if (videoTracks.length === 0) {
+          throw new Error("No video tracks available from input source. Please check permissions.");
+        }
 
       // Set contentHint on the video track for better motion handling
       try {
@@ -1189,7 +1206,7 @@ export function StreamRender({
       setStatusWithLoading(`Error: ${e?.message || "Unknown error"}`);
       await stopStream();
     }
-  }, [mountPlayerIframe, setStatusWithLoading, startWhipClient, updateApiParams, externalApiKey]);
+  }, [mountPlayerIframe, setStatusWithLoading, startWhipClient, updateApiParams, externalApiKey, useFluidCanvasAsInput, fluidCanvasStream]);
 
   const startHealthMonitoring = useCallback(() => {
     if (healthMonitorRef.current) {
@@ -1870,77 +1887,75 @@ export function StreamRender({
     setIsSubmittingPrompt(true);
     setPromptStatus("Submitting...");
     try {
-      const response = await fetch('/api/update-stream-prompts', {
+      const response = await fetch(`${API_BASE_URL}/beta/streams/${currentStreamId}/prompts`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          streamId: currentStreamId,
-          prompts: {
-            model_id: "streamdiffusion",
-            pipeline: "live-video-to-video",
-            params: {
-              model_id: "stabilityai/sd-turbo",
-              prompt: daydreamPrompt || params.params.prompt,
-              prompt_interpolation_method: "slerp",
-              normalize_prompt_weights: true,
-              normalize_seed_weights: true,
-              negative_prompt: "blurry, low quality, flat, 2d",
-              num_inference_steps: 50,
-              seed: 42,
-              t_index_list: [0, 8, 17],
-              controlnets: [
-                {
-                  conditioning_scale: 0,
-                  control_guidance_end: 1,
-                  control_guidance_start: 0,
-                  enabled: true,
-                  model_id: "thibaud/controlnet-sd21-openpose-diffusers",
-                  preprocessor: "pose_tensorrt",
-                  preprocessor_params: {}
-                },
-                {
-                  conditioning_scale: 0,
-                  control_guidance_end: 1,
-                  control_guidance_start: 0,
-                  enabled: true,
-                  model_id: "thibaud/controlnet-sd21-hed-diffusers",
-                  preprocessor: "soft_edge",
-                  preprocessor_params: {}
-                },
-                {
-                  conditioning_scale: 0,
-                  control_guidance_end: 1,
-                  control_guidance_start: 0,
-                  enabled: true,
-                  model_id: "thibaud/controlnet-sd21-canny-diffusers",
-                  preprocessor: "canny",
-                  preprocessor_params: {
-                    high_threshold: 200,
-                    low_threshold: 100
-                  }
-                },
-                {
-                  conditioning_scale: 0,
-                  control_guidance_end: 1,
-                  control_guidance_start: 0,
-                  enabled: true,
-                  model_id: "thibaud/controlnet-sd21-depth-diffusers",
-                  preprocessor: "depth_tensorrt",
-                  preprocessor_params: {}
-                },
-                {
-                  conditioning_scale: 0,
-                  control_guidance_end: 1,
-                  control_guidance_start: 0,
-                  enabled: true,
-                  model_id: "thibaud/controlnet-sd21-color-diffusers",
-                  preprocessor: "passthrough",
-                  preprocessor_params: {}
+          model_id: "streamdiffusion",
+          pipeline: "live-video-to-video",
+          params: {
+            model_id: "stabilityai/sd-turbo",
+            prompt: daydreamPrompt || params.params.prompt,
+            prompt_interpolation_method: "slerp",
+            normalize_prompt_weights: true,
+            normalize_seed_weights: true,
+            negative_prompt: "blurry, low quality, flat, 2d",
+            num_inference_steps: 50,
+            seed: 42,
+            t_index_list: [0, 8, 17],
+            controlnets: [
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-openpose-diffusers",
+                preprocessor: "pose_tensorrt",
+                preprocessor_params: {}
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-hed-diffusers",
+                preprocessor: "soft_edge",
+                preprocessor_params: {}
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-canny-diffusers",
+                preprocessor: "canny",
+                preprocessor_params: {
+                  high_threshold: 200,
+                  low_threshold: 100
                 }
-              ]
-            }
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-depth-diffusers",
+                preprocessor: "depth_tensorrt",
+                preprocessor_params: {}
+              },
+              {
+                conditioning_scale: 0,
+                control_guidance_end: 1,
+                control_guidance_start: 0,
+                enabled: true,
+                model_id: "thibaud/controlnet-sd21-color-diffusers",
+                preprocessor: "passthrough",
+                preprocessor_params: {}
+              }
+            ]
           }
         }),
       });
@@ -1955,6 +1970,38 @@ export function StreamRender({
       setIsSubmittingPrompt(false);
     }
   }, [externalStreamId, streamId, daydreamPrompt, externalApiKey]);
+
+  // Handle fluid canvas stream ready
+  const handleFluidCanvasStreamReady = useCallback((stream: MediaStream) => {
+    console.log("Fluid canvas stream ready for AI input:", stream);
+    setFluidCanvasStream(stream);
+    
+    // If we're currently using fluid canvas as input and streaming, restart the stream
+    if (useFluidCanvasAsInput && isStreaming) {
+      console.log("Restarting stream with new fluid canvas input");
+      // Stop current stream and restart with new fluid canvas stream
+      stopStream();
+      setTimeout(() => {
+        startStream();
+      }, 1000);
+    }
+  }, [useFluidCanvasAsInput, isStreaming, startStream, stopStream]);
+
+  // Toggle between webcam and fluid canvas input
+  const toggleInputSource = useCallback(async () => {
+    if (isStreaming) {
+      // Stop current stream
+      stopStream();
+      
+      // Wait a moment then restart with new input source
+      setTimeout(async () => {
+        setUseFluidCanvasAsInput(!useFluidCanvasAsInput);
+        await startStream();
+      }, 1000);
+    } else {
+      setUseFluidCanvasAsInput(!useFluidCanvasAsInput);
+    }
+  }, [isStreaming, useFluidCanvasAsInput, startStream, stopStream]);
 
   return (
     <div className="space-y-4">
@@ -2421,12 +2468,51 @@ export function StreamRender({
             </div>
           </div>
 
+          {/* Input Source Toggle */}
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Input Source</h3>
+              <div className="flex items-center gap-3">
+                <span className={`text-sm ${inputSource === 'webcam' ? 'text-blue-400' : 'text-gray-500'}`}>
+                  Webcam
+                </span>
+                <button
+                  onClick={toggleInputSource}
+                  disabled={isStreaming && !fluidCanvasStream}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    useFluidCanvasAsInput ? 'bg-purple-600' : 'bg-gray-600'
+                  } ${isStreaming && !fluidCanvasStream ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      useFluidCanvasAsInput ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+                <span className={`text-sm ${inputSource === 'fluid' ? 'text-purple-400' : 'text-gray-500'}`}>
+                  Fluid Canvas
+                </span>
+              </div>
+            </div>
+            
+            <div className="text-sm text-gray-400 space-y-2">
+              <p>
+                {useFluidCanvasAsInput 
+                  ? "🎨 Using fluid canvas effects as AI input - your creative fluid animations will be processed by the AI"
+                  : "📹 Using webcam as AI input - your camera feed will be processed by the AI"
+                }
+              </p>
+              {useFluidCanvasAsInput && !fluidCanvasStream && (
+                <p className="text-yellow-400">
+                  ⚠️ Fluid canvas stream not ready yet. Please wait for the canvas to initialize.
+                </p>
+              )}
+            </div>
+          </div>
+
           {/* Fluid Controls Section */}
           <FluidControls 
-            onStreamReady={(stream) => {
-              // Handle stream ready if needed
-              console.log("Fluid controls stream ready:", stream);
-            }}
+            onStreamReady={handleFluidCanvasStreamReady}
             className="space-y-4"
           />
         </div>
