@@ -1,5 +1,5 @@
 {
-  "buildCommand": "cd .. && cd with-camera-input && pnpm install && pnpm run build && mkdir -p ../dist && cp -r dist/* ../dist/",
+  "buildCommand": "cd .. && cd with-fluid-canvas && pnpm install && pnpm run build && mkdir -p ../dist && cp -r dist/* ../dist/",
   "outputDirectory": "dist",
   "functions": {
     "api/**/*.js": {}
