@@ -1,5 +1,5 @@
 {
-  "buildCommand": "./build-camera-input.sh",
+  "buildCommand": "ls -la && pwd && cd with-camera-input && pnpm install && pnpm run build",
   "outputDirectory": "with-camera-input/dist",
   "functions": {
     "api/**/*.js": {}
