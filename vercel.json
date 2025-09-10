@@ -1,6 +1,6 @@
 {
-  "buildCommand": "cd .. && ls -la && pwd && cd with-camera-input && pnpm install && pnpm run build",
-  "outputDirectory": "with-camera-input/dist",
+  "buildCommand": "cd .. && cd with-camera-input && pnpm install && pnpm run build && cp -r dist ../dist",
+  "outputDirectory": "dist",
   "functions": {
     "api/**/*.js": {}
   }
