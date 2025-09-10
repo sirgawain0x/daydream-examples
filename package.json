@@ -1,5 +1,6 @@
 {
 	"dependencies": {
 		"@openreplay/tracker": "^16.4.8"
-	}
+	},
+	"packageManager": "pnpm@10.15.0"
 }
